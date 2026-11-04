@@ -15,6 +15,7 @@
     "build": "tsc",
     "prepare": "npm run build",
     "auth": "node dist/auth.js",
+    "usage": "node dist/usage.js",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
     "test:smoke": "tsx test/smoke.ts"

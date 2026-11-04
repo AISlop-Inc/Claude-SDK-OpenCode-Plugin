@@ -22,6 +22,7 @@ cd ~/.local/share/opencode/claude-agent-opencode
 npm ci
 npm run build
 npm run auth -- status
+npm run usage
 ```
 
 未ログインの場合は `npm run auth -- login` で SDK 同梱の Claude Code にログインできます。
@@ -90,8 +91,9 @@ opencode run -m 'claude-agent-sdk/claude-sonnet-5-5#high' 'このコードを確
 
 2026-11-04 に型チェック、ビルド、自動テストを確認しました。
 SDK への実接続で、ツール呼び出しを HTTP クライアントへ返し、その実行結果を渡して最終回答を得る往復テストが成功しています。
-OpenCode 2.2.5 本体でのプラグイン読み込みと SDK 接続も確認しましたが、本体経由のツール実行テストは Claude の追加利用枠不足（HTTP 400）で完了していません。
-利用枠が回復したら、以下の OpenCode 本体のテストを再実行してください。
+OpenCode 2.2.5 本体でのプラグイン読み込みと SDK 接続も確認しましたが、本体経由のツール実行テストは追加利用エラー（HTTP 400）で未完了です。
+通常のサブスク枠が残っていても再現するため、枠の回復だけで解消するとは限りません。
+下記の切り分け結果を参照してください。
 
 ```sh
 npm run typecheck
@@ -111,6 +113,53 @@ opencode run --standalone -m claude-agent-sdk/claude-haiku-5-5 \
 
 GitHub Actions を使う場合は `examples/github-actions-test.yml` を `.github/workflows/test.yml` に配置してください。
 この CI は実アカウントを使わず、型チェック・自動テスト・ビルドを実行します。
+
+## 追加利用エラーの切り分け
+
+`You're out of extra usage` は、通常のサブスク枠を使い切ったことを必ずしも意味しません。
+認証と現在の枠は別々に確認します。
+
+```sh
+npm run auth -- status
+npm run usage
+```
+
+`usage` は SDK の利用状況照会 API を呼び、推論用のプロンプトを送信しません。
+`utilization` は使用率の百分率、`resets_at` はタイムゾーン付きのリセット時刻です。
+API キー等の接続では `available: false` になることがあります。
+この照会 API は SDK の実験的 API のため、SDK 更新時に動作確認が必要です。
+出力を公開する場合はアカウント情報や個人の利用状況を含めないでください。
+
+### Haiku 5.5 での実測（2026-11-04）
+
+同じ OS ユーザー・Claude.ai 認証・SDK 0.3.318 で比較しました。
+試験時は通常枠に余裕があり、追加利用は無効でした。
+入力の本文と認証情報はこのリポジトリには含めていません。
+
+| 条件 | 結果 |
+| --- | --- |
+| 短い入力 → echo ツールをクライアントで実行 → 最終回答 | 成功 |
+| 短い入力、最大出力 32,000、推論強度の指定なし | 成功 |
+| OpenCode の実リクエスト（システム指示＋13ツール） | HTTP 400、追加利用エラー |
+| 同じ実リクエストを OpenCode/Bun の外で Node.js から再送 | 同じエラー |
+| 元のシステム指示だけを残し、ツール定義を外す | 同じエラー |
+| 元の13ツールを残し、システム指示なしの短いテストにする | 成功 |
+| 元のシステム指示と同じ46,157文字の一般的なテスト指示、ツールなし | 成功。入力15,858トークン |
+| 元の実リクエストの全指示を公式 `claude_code` プリセットに append | 同じエラー |
+
+同じ文字数でも内容によって成否が変わりました。
+文字数とトークン数は同じではないため、厳密な同一トークン数での比較ではありません。
+成功した一般指示の試験では SDK が `rateLimitType: five_hour`、`isUsingOverage: false` を返し、通常枠での利用を確認できました。
+少なくとも認証の失敗、Bun 固有の不具合、ツール数だけ、最大出力だけでは今回の差を説明できません。
+追加利用に分類される内部条件や、特定の指示が原因かどうかは未確認です。
+OpenCode の実際の指示を削って動かす変更は採用していません。
+
+公式ヘルプの [SDK とサブスクの説明](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) は、Claude プランでログインした SDK が通常枠を使うと説明しています。
+一方、[第三者ツールの認証に関する説明](https://support.claude.com/en/articles/13189465-log-in-to-your-claude-account) は、第三者ツールが追加利用に振り分けられる場合があると説明しています。
+したがって、SDK のログイン成功や短い smoke test の成功だけでは、OpenCode 全体を通常枠で利用できるとは保証できません。
+プラグインは API キーを設定したり追加利用を有効化したりしません。
+既に有効な追加利用を使うかどうかを含め、実際の課金先は SDK と Anthropic 側の判定に従います。
+解消の確認は、通常枠の確認と OpenCode 本体の read 往復テストの両方で行ってください。
 
 ## 参考
 
