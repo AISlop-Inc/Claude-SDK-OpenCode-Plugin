@@ -1,0 +1,5 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["../.."],
+  "model": "claude-agent-sdk/claude-haiku-5-5"
+}
