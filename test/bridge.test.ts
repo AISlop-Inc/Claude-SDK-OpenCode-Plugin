@@ -15,11 +15,22 @@ test('history preserves tool IDs, results and image attachments', () => {
         { role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,YQ==' } }] },
     ] });
     const result = conversation(request);
-    assert.match(result.system, /System instruction/);
+    assert.doesNotMatch(result.system, /System instruction/);
     const transcript = JSON.parse((result.content[0] as { text: string }).text.split('\n').slice(1).join('\n'));
     assert.equal(transcript[0].tool_calls[0].id, 'call-1');
     assert.equal(transcript[1].tool_call_id, 'call-1');
     assert.deepEqual(result.content[1], { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'YQ==' } });
+});
+
+test('OpenCode system and developer instructions are not sent', () => {
+    const request = requestSchema.parse({ ...payload, messages: [
+        { role: 'developer', content: 'Developer instruction' },
+        { role: 'system', content: 'OpenCode system instruction' },
+        { role: 'user', content: 'hello' },
+    ] });
+    const result = conversation(request);
+    assert.doesNotMatch(JSON.stringify(result), /Developer instruction|OpenCode system instruction/);
+    assert.throws(() => conversation(requestSchema.parse({ ...payload, messages: [{ role: 'system', content: 'only system' }] })));
 });
 
 test('invalid/unsupported input fails instead of silently changing semantics', () => {

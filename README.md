@@ -67,6 +67,7 @@ opencode run -m 'claude-agent-sdk/claude-sonnet-5-5#high' 'このコードを確
 - テキスト、画像入力、関数ツール、JSON 応答、SSE ストリーミングに対応
 - ツールは MCP として SDK に提示し、`PreToolUse` の `defer` で OpenCode に返却
 - SDK の組み込みツール、プロジェクト設定、外部 MCP の自動読み込みを無効化
+- OpenCode が送る `system` / `developer` 指示は SDK へ転送しない。ユーザー、assistant、ツール履歴は転送する
 - ツール実行と承認は OpenCode が担当
 - キャンセル時に SDK を停止し、プラグイン解除時に HTTP サーバーを終了
 - `127.0.0.1` の空きポートと、起動ごとのランダムな Bearer トークンを使用
@@ -76,6 +77,7 @@ opencode run -m 'claude-agent-sdk/claude-sonnet-5-5#high' 'このコードを確
 
 ## 現在の制限
 
+- OpenCode の `system` / `developer` 指示は転送しません。ユーザーメッセージ内の指示は転送します。
 - 会話は毎回 JSON の履歴として渡します。
   SDK セッションの resume は使わず、ネイティブの assistant / tool 履歴と同一の表現ではありません。
   会話が長いほど入力が増えます。
@@ -90,10 +92,8 @@ opencode run -m 'claude-agent-sdk/claude-sonnet-5-5#high' 'このコードを確
 ## 開発・検証
 
 2026-11-04 に型チェック、ビルド、自動テストを確認しました。
-SDK への実接続で、ツール呼び出しを HTTP クライアントへ返し、その実行結果を渡して最終回答を得る往復テストが成功しています。
-OpenCode 2.2.5 本体でのプラグイン読み込みと SDK 接続も確認しましたが、本体経由のツール実行テストは追加利用エラー（HTTP 400）で未完了です。
-通常のサブスク枠が残っていても再現するため、枠の回復だけで解消するとは限りません。
-下記の切り分け結果を参照してください。
+OpenCode の `system` / `developer` 指示を外して送信する変更後、Haiku 5.5 で OpenCode 本体の read 往復テストも成功しています。
+プロジェクトルールがシステム指示だけに入っている場合、Claude はその内容を受け取りません。
 
 ```sh
 npm run typecheck
