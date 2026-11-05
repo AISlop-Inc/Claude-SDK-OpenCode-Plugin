@@ -16,10 +16,24 @@ test('history preserves tool IDs, results and image attachments', () => {
     ] });
     const result = conversation(request);
     assert.doesNotMatch(result.system, /System instruction/);
-    const transcript = JSON.parse((result.content[0] as { text: string }).text.split('\n').slice(1).join('\n'));
+    const transcript = result.content.slice(1).filter((part) => (part as { type: string }).type === 'text')
+        .map((part) => JSON.parse((part as { text: string }).text));
     assert.equal(transcript[0].tool_calls[0].id, 'call-1');
     assert.equal(transcript[1].tool_call_id, 'call-1');
-    assert.deepEqual(result.content[1], { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'YQ==' } });
+    assert.deepEqual(result.content[4], { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'YQ==' } });
+});
+
+test('appending messages preserves the complete previous content prefix including images', () => {
+    const first = requestSchema.parse({ ...payload, messages: [
+        { role: 'user', content: [{ type: 'text', text: '日本語\n"test"' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,YQ==' } }] },
+    ] });
+    const extended = requestSchema.parse({ ...first, messages: [...first.messages,
+        { role: 'assistant', content: 'result' }, { role: 'tool', tool_call_id: 'call-1', content: 'output' }] });
+    const previous = conversation(first).content;
+    const next = conversation(extended).content;
+    assert.deepEqual(next.slice(0, previous.length), previous);
+    assert.equal(JSON.parse((next[1] as { text: string }).text).content[0].text, '日本語\n"test"');
+    assert.equal(JSON.parse((next.at(-1) as { text: string }).text).tool_call_id, 'call-1');
 });
 
 test('OpenCode system and developer instructions are not sent', () => {
@@ -133,6 +147,23 @@ test('Claude quota rejection preserves HTTP 400 to avoid server-error retries', 
         });
         assert.equal(response.status, 400);
         assert.match(await response.text(), /out of extra usage/);
+    } finally {
+        await server.close();
+    }
+});
+
+test('streaming Claude errors retain their HTTP status in the SSE error', async () => {
+    const server = await startServer(['test-model'], async function* () {
+        yield { type: 'text', text: 'started' };
+        throw new ClaudeError('unknown', "API Error: 400 You're out of extra usage.");
+    });
+    try {
+        const response = await fetch(server.baseURL + '/chat/completions', {
+            method: 'POST', headers: { authorization: 'Bearer ' + server.token }, body: JSON.stringify({ ...payload, stream: true }),
+        });
+        const events = (await response.text()).split('\n\n').filter((line) => line.startsWith('data: '))
+            .map((line) => JSON.parse(line.slice(6)));
+        assert.equal(events.at(-1).error.code, 400);
     } finally {
         await server.close();
     }

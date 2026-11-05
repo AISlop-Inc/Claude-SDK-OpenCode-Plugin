@@ -36,9 +36,38 @@ test('SDK defers execution, returns original tool name and counts cache tokens',
     assert.equal(events[0].type, 'tool');
     if (events[0].type === 'tool') assert.equal(events[0].call.function.name, 'read');
     assert.deepEqual(events[1], { type: 'done', reason: 'tool_calls', usage: {
-        prompt_tokens: 10, completion_tokens: 4, total_tokens: 14, prompt_tokens_details: { cached_tokens: 2 },
+        prompt_tokens: 10, completion_tokens: 4, total_tokens: 14, prompt_tokens_details: { cached_tokens: 2, cache_write_tokens: 3 },
     } });
     assert.equal(mock.isClosed(), true);
+});
+
+test('none disables thinking without changing other effort settings', async () => {
+    for (const effort of ['none', 'minimal', 'high'] as const) {
+        const mock = mockQuery([{ type: 'result', subtype: 'success', is_error: false, usage }], (options) => {
+            assert.deepEqual(options?.thinking, effort === 'none' ? { type: 'disabled' } : undefined);
+            assert.equal(options?.effort, effort === 'none' ? undefined : effort === 'minimal' ? 'low' : 'high');
+        });
+        await Array.fromAsync(runTurn({ ...request, reasoning_effort: effort }, new AbortController().signal, mock.run));
+    }
+});
+
+test('SDK receives append-stable transcript blocks', async () => {
+    let received: unknown;
+    const run = (({ prompt }: Parameters<typeof query>[0]) => Object.assign((async function* () {
+        for await (const message of prompt as AsyncIterable<{ message: { content: unknown } }>) received = message.message.content;
+        yield { type: 'result', subtype: 'success', is_error: false, usage } as SDKMessage;
+    })(), { close() {} })) as typeof query;
+    await Array.fromAsync(runTurn(request, new AbortController().signal, run));
+    assert.ok(Array.isArray(received));
+    assert.equal(received.length, 2);
+    assert.equal(JSON.parse(received[1].text).content[0].text, 'Read a file');
+});
+
+test('SDK result errors preserve upstream status', async () => {
+    const mock = mockQuery([{ type: 'result', subtype: 'error_during_execution', is_error: true,
+        api_error_status: 400, errors: ['out of extra usage'] }]);
+    await assert.rejects(Array.fromAsync(runTurn(request, new AbortController().signal, mock.run)),
+        (error: unknown) => error instanceof Error && 'status' in error && error.status === 400);
 });
 
 test('partial text is not repeated in the assistant message', async () => {

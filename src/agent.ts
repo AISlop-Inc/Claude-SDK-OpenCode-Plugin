@@ -62,7 +62,8 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
             })(),
             options: { ...options, model: request.model, systemPrompt: transcript.system,
                 abortController: controller, includePartialMessages: true, maxTurns: 1,
-                effort: effort === 'none' || effort === 'minimal' ? 'low' : effort,
+                effort: effort === 'none' ? undefined : effort === 'minimal' ? 'low' : effort,
+                ...(effort === 'none' ? { thinking: { type: 'disabled' as const } } : {}),
                 mcpServers: tools.length ? { opencode: { type: 'sdk', name: 'opencode', instance: server } } : {},
                 hooks: { PreToolUse: [{ hooks: [async () => ({
                     hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'defer' },
@@ -99,7 +100,9 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
                 const deferred = calls > 0 && message.subtype === 'success' && !message.api_error_status &&
                     (message.stop_reason === 'tool_deferred' || ['tool_deferred', 'tool_deferred_unavailable'].includes(message.terminal_reason ?? ''));
                 if (message.is_error && !deferred && !(calls > 0 && message.subtype === 'error_max_turns')) {
-                    throw new Error('Claude SDK: ' + (message.subtype === 'success' ? message.result : message.errors.join('; ')));
+                    const status = 'api_error_status' in message && typeof message.api_error_status === 'number' ? message.api_error_status : undefined;
+                    throw new ClaudeError(message.subtype, (status ? 'API Error: ' + status + ' ' : '') +
+                        (message.subtype === 'success' ? message.result : message.errors.join('; ')));
                 }
                 const usage = message.usage;
                 const cached = usage.cache_read_input_tokens ?? 0;
@@ -107,7 +110,8 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
                 completed = true;
                 yield { type: 'done', reason: calls ? 'tool_calls' : stopReason === 'max_tokens' ? 'length' : 'stop',
                     usage: { prompt_tokens: input, completion_tokens: usage.output_tokens,
-                        total_tokens: input + usage.output_tokens, prompt_tokens_details: { cached_tokens: cached } } };
+                        total_tokens: input + usage.output_tokens, prompt_tokens_details: { cached_tokens: cached,
+                            cache_write_tokens: usage.cache_creation_input_tokens ?? 0 } } };
             }
         }
         if (!completed) throw new Error('Claude SDK ended without a result');
