@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFile } from 'node:fs/promises';
+import type { query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { conversation, requestSchema, type TurnEvent } from '../src/protocol.js';
 import { ClaudeError, neverExecute, toolCatalog } from '../src/agent.js';
 import { startServer, type RunTurn } from '../src/server.js';
@@ -95,6 +97,65 @@ test('HTTP JSON and SSE preserve tool calls, usage and finish reason', async () 
     } finally {
         await server.close();
     }
+});
+
+test('authenticated HTTP requests pass valid session identity to the runner', async () => {
+    let seen: unknown;
+    const server = await startServer(['test-model'], async function* (_request, _signal, identity) {
+        seen = identity;
+        yield { type: 'done', reason: 'stop', usage };
+    });
+    try {
+        const response = await fetch(server.baseURL + '/chat/completions', {
+            method: 'POST', headers: { authorization: 'Bearer ' + server.token,
+                'x-claude-opencode-session': 'ses_123', 'x-claude-opencode-agent': 'build', 'x-claude-opencode-kind': 'primary' },
+            body: JSON.stringify(payload),
+        });
+        assert.equal(response.status, 200);
+        assert.deepEqual(seen, { sessionID: 'ses_123', agent: 'build', kind: 'primary' });
+    } finally {
+        await server.close();
+    }
+});
+
+test('matching single-tool continuation resumes SDK with only the external result', async () => {
+    const initial = requestSchema.parse({ ...payload, tools: [{ type: 'function', function: { name: 'read', parameters: { type: 'object' } } }] });
+    const alias = [...toolCatalog(initial).names.keys()][0];
+    let queries = 0;
+    const queryFn = (({ options }: Parameters<typeof query>[0]) => Object.assign((async function* () {
+        queries++;
+        const config = JSON.parse(await readFile(options!.env!.OPENCODE_CLAUDE_MCP_CONFIG!, 'utf8'));
+        const sdkUsage = { input_tokens: 1, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 };
+        if (queries === 1) {
+            assert.equal(options!.resume, undefined);
+            assert.equal(config.result, undefined);
+            yield { type: 'assistant', parent_tool_use_id: null, message: { stop_reason: 'tool_use', content: [
+                { type: 'tool_use', id: 'call-1', name: alias, input: { path: 'a' } },
+            ] } } as SDKMessage;
+            yield { type: 'result', subtype: 'success', is_error: false, session_id: 'sdk-session', terminal_reason: 'tool_deferred',
+                deferred_tool_use: { id: 'call-1', name: alias, input: { path: 'a' } }, usage: sdkUsage } as SDKMessage;
+        } else {
+            assert.equal(options!.resume, 'sdk-session');
+            assert.deepEqual(config.result, { name: alias.replace('mcp__opencode__', ''), input: { path: 'a' }, content: 'external result' });
+            const hook = options!.hooks!.PreToolUse![0].hooks[0];
+            const decision = await hook({ hook_event_name: 'PreToolUse', tool_use_id: 'call-1', tool_name: alias } as never, 'call-1', {} as never);
+            assert.equal(decision.hookSpecificOutput?.permissionDecision, 'allow');
+            yield { type: 'assistant', parent_tool_use_id: null, message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'done' }] } } as SDKMessage;
+            yield { type: 'result', subtype: 'success', is_error: false, session_id: 'sdk-session', usage: sdkUsage } as SDKMessage;
+        }
+    })(), { close() {} })) as typeof query;
+    const server = await startServer(['test-model'], undefined, queryFn);
+    try {
+        const headers = { authorization: 'Bearer ' + server.token, 'x-claude-opencode-session': 'ses_1',
+            'x-claude-opencode-agent': 'build', 'x-claude-opencode-kind': 'primary' };
+        const send = (body: object) => fetch(server.baseURL + '/chat/completions', { method: 'POST', headers, body: JSON.stringify(body) });
+        const first = await (await send(initial)).json();
+        const assistant = first.choices[0].message;
+        const second = await (await send({ ...initial, messages: [...initial.messages, assistant,
+            { role: 'tool', tool_call_id: 'call-1', content: 'external result' }] })).json();
+        assert.equal(second.choices[0].message.content, 'done');
+        assert.equal(queries, 2);
+    } finally { await server.close(); }
 });
 
 test('upstream errors never emit successful completion', async () => {

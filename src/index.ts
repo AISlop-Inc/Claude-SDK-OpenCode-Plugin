@@ -9,6 +9,11 @@ export default Plugin.define({
         const server = await startServer(catalog.map((model) => model.id));
         const providerID = Provider.ID.make('claude-agent-sdk');
         try {
+            await ctx.session.hook('model.request', (event) => {
+                event.headers['x-claude-opencode-session'] = event.sessionID;
+                event.headers['x-claude-opencode-agent'] = encodeURIComponent(event.agent);
+                event.headers['x-claude-opencode-kind'] = event.kind;
+            }, { providerID });
             await ctx.provider.transform((editor) => {
                 editor.add({
                     info: {

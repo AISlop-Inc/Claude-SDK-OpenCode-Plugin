@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { runTurn, toolCatalog } from '../src/agent.js';
 import { requestSchema } from '../src/protocol.js';
@@ -32,7 +35,7 @@ test('SDK defers execution, returns original tool name and counts cache tokens',
         hook = options?.hooks?.PreToolUse?.[0].hooks[0];
     });
     const events = await Array.fromAsync(runTurn(request, new AbortController().signal, mock.run));
-    assert.equal((await hook!()).hookSpecificOutput.permissionDecision, 'defer');
+    assert.equal((await hook!({ hook_event_name: 'PreToolUse', tool_use_id: 'call-1', tool_name: alias })).hookSpecificOutput.permissionDecision, 'defer');
     assert.equal(events[0].type, 'tool');
     if (events[0].type === 'tool') assert.equal(events[0].call.function.name, 'read');
     assert.deepEqual(events[1], { type: 'done', reason: 'tool_calls', usage: {
@@ -68,6 +71,29 @@ test('SDK result errors preserve upstream status', async () => {
         api_error_status: 400, errors: ['out of extra usage'] }]);
     await assert.rejects(Array.fromAsync(runTurn(request, new AbortController().signal, mock.run)),
         (error: unknown) => error instanceof Error && 'status' in error && error.status === 400);
+});
+
+test('unavailable deferred tool is not reported as a successful tool call', async () => {
+    const alias = [...toolCatalog(request).names.keys()][0];
+    const mock = mockQuery([
+        { type: 'assistant', parent_tool_use_id: null, message: { stop_reason: 'tool_use', content: [
+            { type: 'tool_use', id: 'call-1', name: alias, input: {} },
+        ] } },
+        { type: 'result', subtype: 'success', is_error: true, terminal_reason: 'tool_deferred_unavailable',
+            stop_reason: 'tool_deferred', result: 'tool unavailable', usage },
+    ]);
+    await assert.rejects(Array.fromAsync(runTurn(request, new AbortController().signal, mock.run)), /tool unavailable/);
+});
+
+test('managed requests fail closed when the MCP tool server did not connect', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'opencode-mcp-test-'));
+    const mock = mockQuery([{ type: 'system', subtype: 'init', mcp_servers: [{ name: 'opencode', status: 'failed' }] }]);
+    try {
+        await assert.rejects(Array.fromAsync(runTurn(request, new AbortController().signal, mock.run, {
+            cwd, sessionID: 'session', save() { throw new Error('must not save'); },
+        })), (error: unknown) => error instanceof Error && /tools could not connect/.test(error.message) &&
+            'status' in error && error.status === 400);
+    } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
 test('partial text is not repeated in the assistant message', async () => {
