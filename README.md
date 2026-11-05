@@ -78,11 +78,15 @@ opencode run -m 'claude-agent-sdk/claude-sonnet-5-5#high' 'このコードを確
 ## 現在の制限
 
 - OpenCode の `system` / `developer` 指示は転送しません。ユーザーメッセージ内の指示は転送します。
-- 会話は毎回 JSON の履歴として渡します。
-  SDK セッションの resume は使わず、ネイティブの assistant / tool 履歴と同一の表現ではありません。
-  履歴をメッセージごとに分割して以前の内容を安定させ、SDK のプロンプトキャッシュが再利用しやすいようにします。
-  履歴全体の送信は続くため、会話が長いほど入力が増えます。
-  実際のキャッシュヒット率や利用量の削減効果は未検証です。
+- 同一セッション内で履歴・設定・単一ツール呼び出しが一致する場合、SDK のセッションを再開し、外部で実行されたツール結果だけを引き渡します。
+  並列ツール、異なる履歴や設定、画像付きツール結果など、条件に合わない場合は会話全体を JSON の履歴として再送します。
+  これはネイティブの assistant / tool 履歴と同一の表現ではありません。
+- SDK セッションの再開にはディスクへの保存が必要です。
+  Claude Code は会話内容を通常の SDK セッション保存先（`~/.claude/projects/` または設定された保存先）に書き込みます。
+  ツール定義と結果を含む一時ファイルはアクセスを制限した一時ディレクトリに置き、セッションの完了・破棄またはプラグイン終了時に削除します。
+  強制終了時には一時ファイルが残る場合があります。
+- Haikuを使った単一ツールの実接続テストでは、再開時のキャッシュ読み取りを確認しました。
+  実際の利用枠の削減率は環境やキャッシュ状態により異なり、未測定です。
 - SDK カタログで取得するのはコンテキスト上限です。
   OpenCode に登録する最大出力は保守的に 32,000 トークンとし、実際の出力制限は SDK にも従います。
 - `tool_choice` は `auto` と `none` に対応します。
@@ -104,6 +108,11 @@ npm run build
 
 # 実際の Claude 利用が発生する往復テスト
 CLAUDE_SMOKE_MODEL=claude-haiku-5-5 npm run test:smoke
+
+# SDK再開を使う比較用の実接続テスト（事前にnpm run buildが必要）
+CLAUDE_SMOKE_MODEL=claude-haiku-5-5 npm run test:resume-smoke
+# 同じ入力を全履歴送信で比較
+NO_RESUME=1 CLAUDE_SMOKE_MODEL=claude-haiku-5-5 npm run test:resume-smoke
 
 # OpenCode 本体からの確認
 cd examples/smoke

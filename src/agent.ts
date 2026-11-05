@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { query, type Options, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { conversation, type ChatRequest, type TurnEvent } from './protocol.js';
+import type { Checkpoint } from './continuation.js';
 
 export class ClaudeError extends Error {
     readonly status: number;
@@ -39,10 +41,17 @@ export async function neverExecute(): Promise<never> {
     throw new Error('Tool execution belongs to OpenCode');
 }
 
-export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryFn = query): AsyncGenerator<TurnEvent> {
+export type ManagedTurn = {
+    cwd: string;
+    sessionID: string;
+    resume?: { checkpoint: Checkpoint; content: string };
+    save: (checkpoint: Checkpoint) => void;
+};
+
+export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryFn = query, managed?: ManagedTurn): AsyncGenerator<TurnEvent> {
     const transcript = conversation(request);
     const { names, tools } = toolCatalog(request);
-    const cwd = await mkdtemp(join(tmpdir(), 'opencode-claude-'));
+    const cwd = managed?.cwd ?? await mkdtemp(join(tmpdir(), 'opencode-claude-'));
     const controller = new AbortController();
     const abort = () => controller.abort();
     signal.addEventListener('abort', abort, { once: true });
@@ -51,22 +60,37 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
     server.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
     server.server.setRequestHandler(CallToolRequestSchema, neverExecute);
     let active: ReturnType<typeof query> | undefined;
+    let releasePrompt!: () => void;
+    const promptReleased = new Promise<void>((resolve) => { releasePrompt = resolve; });
     try {
         const options = sdkOptions(cwd);
         const maxTokens = request.max_completion_tokens ?? request.max_tokens;
         if (maxTokens) options.env!.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxTokens);
         const effort = request.reasoning_effort;
+        const priorCall = managed?.resume?.checkpoint.assistant.tool_calls?.[0];
+        const configPath = join(cwd, 'mcp-config.json');
+        if (managed) await writeFile(configPath, JSON.stringify({ tools, ...(priorCall ? { result: {
+            name: [...names.entries()].find(([, original]) => original === priorCall.function.name)?.[0].replace(/^mcp__opencode__/, ''),
+            input: JSON.parse(priorCall.function.arguments), content: managed.resume!.content,
+        } } : {}) }), { mode: 0o600 });
         active = queryFn({
             prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
+                if (managed?.resume) { await promptReleased; return; }
                 yield { type: 'user', message: { role: 'user', content: transcript.content as SDKUserMessage['message']['content'] }, parent_tool_use_id: null };
             })(),
             options: { ...options, model: request.model, systemPrompt: transcript.system,
+                ...(managed ? { persistSession: true, ...(managed.resume ? { resume: managed.resume.checkpoint.sdkSessionID } : {}),
+                    env: { ...options.env, OPENCODE_CLAUDE_MCP_CONFIG: configPath } } : {}),
                 abortController: controller, includePartialMessages: true, maxTurns: 1,
                 effort: effort === 'none' ? undefined : effort === 'minimal' ? 'low' : effort,
                 ...(effort === 'none' ? { thinking: { type: 'disabled' as const } } : {}),
-                mcpServers: tools.length ? { opencode: { type: 'sdk', name: 'opencode', instance: server } } : {},
-                hooks: { PreToolUse: [{ hooks: [async () => ({
-                    hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'defer' },
+                mcpServers: tools.length ? { opencode: managed
+                    ? { type: 'stdio', command: process.execPath, args: [fileURLToPath(new URL('./mcp-stdio.js', import.meta.url))] }
+                    : { type: 'sdk', name: 'opencode', instance: server } } : {},
+                hooks: { PreToolUse: [{ hooks: [async (input) => ({
+                    hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision:
+                        input.hook_event_name === 'PreToolUse' && priorCall?.id === input.tool_use_id &&
+                        names.get(input.tool_name) === priorCall.function.name ? 'allow' : 'defer' },
                 })] }] },
             },
         });
@@ -74,11 +98,14 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
         let calls = 0;
         let stopReason: string | null = null;
         let completed = false;
+        let text = '';
+        const toolCalls: NonNullable<ChatRequest['messages'][number]['tool_calls']> = [];
         for await (const message of active) {
             if (message.type === 'stream_event' && message.parent_tool_use_id === null) {
                 const event = message.event;
                 if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
                     streamedText = true;
+                    text += event.delta.text;
                     yield { type: 'text', text: event.delta.text };
                 }
             } else if (message.type === 'assistant' && message.parent_tool_use_id === null) {
@@ -88,12 +115,13 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
                 }
                 stopReason = message.message.stop_reason;
                 for (const block of message.message.content) {
-                    if (block.type === 'text' && !streamedText) yield { type: 'text', text: block.text };
+                    if (block.type === 'text' && !streamedText) { text += block.text; yield { type: 'text', text: block.text }; }
                     if (block.type !== 'tool_use') continue;
                     const name = names.get(block.name) ?? [...names.values()].find((name) => name === block.name);
                     if (!name) throw new Error('Claude requested an unavailable tool: ' + block.name);
-                    yield { type: 'tool', call: { index: calls++, id: block.id, type: 'function',
-                        function: { name, arguments: JSON.stringify(block.input) } } };
+                    const call = { id: block.id, type: 'function' as const, function: { name, arguments: JSON.stringify(block.input) } };
+                    toolCalls.push(call);
+                    yield { type: 'tool', call: { index: calls++, ...call } };
                 }
                 streamedText = false;
             } else if (message.type === 'result') {
@@ -106,6 +134,11 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
                         (message.subtype === 'success' ? message.result : message.errors.join('; ')));
                 }
                 const usage = message.usage;
+                if (managed && deferred && toolCalls.length === 1 && message.session_id &&
+                    message.subtype === 'success' && message.deferred_tool_use?.id === toolCalls[0].id) {
+                    managed.save({ sessionID: managed.sessionID, sdkSessionID: message.session_id, request,
+                        assistant: { role: 'assistant', content: text || null, tool_calls: toolCalls } });
+                }
                 const cached = usage.cache_read_input_tokens ?? 0;
                 const input = usage.input_tokens + (usage.cache_creation_input_tokens ?? 0) + cached;
                 completed = true;
@@ -118,9 +151,10 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
         if (!completed) throw new Error('Claude SDK ended without a result');
     } finally {
         signal.removeEventListener('abort', abort);
+        releasePrompt();
         active?.close();
         await server.close();
-        await rm(cwd, { recursive: true, force: true });
+        if (!managed) await rm(cwd, { recursive: true, force: true });
     }
 }
 

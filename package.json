@@ -18,7 +18,8 @@
     "usage": "node dist/usage.js",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
-    "test:smoke": "tsx test/smoke.ts"
+    "test:smoke": "tsx test/smoke.ts",
+    "test:resume-smoke": "tsx test/manual-bridge.ts"
   },
   "dependencies": {
     "@opencode/plugin": "2.2.5",
