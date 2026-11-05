@@ -137,3 +137,20 @@ test('Claude quota rejection preserves HTTP 400 to avoid server-error retries', 
         await server.close();
     }
 });
+
+test('streaming Claude errors retain their HTTP status in the SSE error', async () => {
+    const server = await startServer(['test-model'], async function* () {
+        yield { type: 'text', text: 'started' };
+        throw new ClaudeError('unknown', "API Error: 400 You're out of extra usage.");
+    });
+    try {
+        const response = await fetch(server.baseURL + '/chat/completions', {
+            method: 'POST', headers: { authorization: 'Bearer ' + server.token }, body: JSON.stringify({ ...payload, stream: true }),
+        });
+        const events = (await response.text()).split('\n\n').filter((line) => line.startsWith('data: '))
+            .map((line) => JSON.parse(line.slice(6)));
+        assert.equal(events.at(-1).error.code, 400);
+    } finally {
+        await server.close();
+    }
+});

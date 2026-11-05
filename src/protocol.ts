@@ -34,7 +34,7 @@ export const requestSchema = z.object({
 
 export type ChatRequest = z.infer<typeof requestSchema>;
 export type ToolCall = { index: number; id: string; type: 'function'; function: { name: string; arguments: string } };
-export type Usage = { prompt_tokens: number; completion_tokens: number; total_tokens: number; prompt_tokens_details: { cached_tokens: number } };
+export type Usage = { prompt_tokens: number; completion_tokens: number; total_tokens: number; prompt_tokens_details: { cached_tokens: number; cache_write_tokens?: number } };
 export type TurnEvent =
     | { type: 'text'; text: string }
     | { type: 'tool'; call: ToolCall }

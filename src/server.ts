@@ -30,7 +30,8 @@ export async function startServer(modelIDs: string[], run: RunTurn = runTurn) {
             const message = error instanceof Error ? error.message : String(error);
             if (response.destroyed) return;
             if (!response.headersSent) json(response, error instanceof ClaudeError ? error.status : 502, { error: { message, type: 'upstream_error' } });
-            else response.end('data: ' + JSON.stringify({ error: { message, type: 'upstream_error' } }) + '\n\n');
+            else response.end('data: ' + JSON.stringify({ error: { message, type: 'upstream_error',
+                ...(error instanceof ClaudeError ? { code: error.status } : {}) } }) + '\n\n');
         });
     });
 
