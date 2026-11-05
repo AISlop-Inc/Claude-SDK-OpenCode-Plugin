@@ -67,7 +67,7 @@ opencode run -m 'claude-agent-sdk/claude-sonnet-5-5#high' 'このコードを確
 - テキスト、画像入力、関数ツール、JSON 応答、SSE ストリーミングに対応
 - ツールは MCP として SDK に提示し、`PreToolUse` の `defer` で OpenCode に返却
 - SDK の組み込みツール、プロジェクト設定、外部 MCP の自動読み込みを無効化
-- OpenCode が送る `system` / `developer` 指示は SDK へ転送しない。ユーザー、assistant、ツール履歴は転送する
+- OpenCode の組み込み指示は除外し、`AGENTS.md` 等の指示、エージェント指示、会話とツール履歴は転送する
 - ツール実行と承認は OpenCode が担当
 - キャンセル時に SDK を停止し、プラグイン解除時に HTTP サーバーを終了
 - `127.0.0.1` の空きポートと、起動ごとのランダムな Bearer トークンを使用
@@ -77,7 +77,7 @@ opencode run -m 'claude-agent-sdk/claude-sonnet-5-5#high' 'このコードを確
 
 ## 現在の制限
 
-- OpenCode の `system` / `developer` 指示は転送しません。ユーザーメッセージ内の指示は転送します。
+- OpenCode の指示元メタデータは実験的 API です。OpenCode のバージョンにより分類が変わる可能性があります。
 - 同一セッション内で履歴・設定・単一ツール呼び出しが一致する場合、SDK のセッションを再開し、外部で実行されたツール結果だけを引き渡します。
   並列ツール、異なる履歴や設定、画像付きツール結果など、条件に合わない場合は会話全体を JSON の履歴として再送します。
   これはネイティブの assistant / tool 履歴と同一の表現ではありません。
@@ -98,8 +98,7 @@ opencode run -m 'claude-agent-sdk/claude-sonnet-5-5#high' 'このコードを確
 ## 開発・検証
 
 2026-11-04 に型チェック、ビルド、自動テストを確認しました。
-OpenCode の `system` / `developer` 指示を外して送信する変更後、Haiku 5.5 で OpenCode 本体の read 往復テストも成功しています。
-プロジェクトルールがシステム指示だけに入っている場合、Claude はその内容を受け取りません。
+組み込み指示とプロジェクト指示を分け、`AGENTS.md` 等を保持するようにしています。
 
 ```sh
 npm run typecheck
@@ -163,7 +162,7 @@ API キー等の接続では `available: false` になることがあります�
 成功した一般指示の試験では SDK が `rateLimitType: five_hour`、`isUsingOverage: false` を返し、通常枠での利用を確認できました。
 少なくとも認証の失敗、Bun 固有の不具合、ツール数だけ、最大出力だけでは今回の差を説明できません。
 追加利用に分類される内部条件や、特定の指示が原因かどうかは未確認です。
-OpenCode の実際の指示を削って動かす変更は採用していません。
+OpenCode の組み込み指示を除外する一方、プロジェクトやユーザーが指定した指示は保持します。
 
 公式ヘルプの [SDK とサブスクの説明](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) は、Claude プランでログインした SDK が通常枠を使うと説明しています。
 一方、[第三者ツールの認証に関する説明](https://support.claude.com/en/articles/13189465-log-in-to-your-claude-account) は、第三者ツールが追加利用に振り分けられる場合があると説明しています。

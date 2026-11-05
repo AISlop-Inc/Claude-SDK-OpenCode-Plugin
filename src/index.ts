@@ -1,6 +1,7 @@
 import { Model, Plugin, Provider } from '@opencode/plugin';
 import { discoverModels } from './agent.js';
 import { startServer } from './server.js';
+import { filterInstructions } from './instructions.js';
 
 export default Plugin.define({
     id: 'claude-agent-sdk',
@@ -14,6 +15,9 @@ export default Plugin.define({
                 event.headers['x-claude-opencode-agent'] = encodeURIComponent(event.agent);
                 event.headers['x-claude-opencode-kind'] = event.kind;
             }, { providerID });
+            for (const kind of ['context', 'compaction', 'generate', 'title'] as const) {
+                await ctx.session.hook(kind, (event) => filterInstructions(event.system), { providerID });
+            }
             await ctx.provider.transform((editor) => {
                 editor.add({
                     info: {

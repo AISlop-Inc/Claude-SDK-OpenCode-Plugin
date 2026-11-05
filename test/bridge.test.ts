@@ -17,7 +17,7 @@ test('history preserves tool IDs, results and image attachments', () => {
         { role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,YQ==' } }] },
     ] });
     const result = conversation(request);
-    assert.doesNotMatch(result.system, /System instruction/);
+    assert.match(result.system, /System instruction/);
     const transcript = result.content.slice(1).filter((part) => (part as { type: string }).type === 'text')
         .map((part) => JSON.parse((part as { text: string }).text));
     assert.equal(transcript[0].tool_calls[0].id, 'call-1');
@@ -38,14 +38,15 @@ test('appending messages preserves the complete previous content prefix includin
     assert.equal(JSON.parse((next.at(-1) as { text: string }).text).tool_call_id, 'call-1');
 });
 
-test('OpenCode system and developer instructions are not sent', () => {
+test('user-provided system and developer instructions are retained', () => {
     const request = requestSchema.parse({ ...payload, messages: [
         { role: 'developer', content: 'Developer instruction' },
         { role: 'system', content: 'OpenCode system instruction' },
         { role: 'user', content: 'hello' },
     ] });
     const result = conversation(request);
-    assert.doesNotMatch(JSON.stringify(result), /Developer instruction|OpenCode system instruction/);
+    assert.match(JSON.stringify(result), /Developer instruction/);
+    assert.match(JSON.stringify(result), /OpenCode system instruction/);
     assert.throws(() => conversation(requestSchema.parse({ ...payload, messages: [{ role: 'system', content: 'only system' }] })));
 });
 
