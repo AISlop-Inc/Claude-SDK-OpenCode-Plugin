@@ -16,10 +16,24 @@ test('history preserves tool IDs, results and image attachments', () => {
     ] });
     const result = conversation(request);
     assert.doesNotMatch(result.system, /System instruction/);
-    const transcript = JSON.parse((result.content[0] as { text: string }).text.split('\n').slice(1).join('\n'));
+    const transcript = result.content.slice(1).filter((part) => (part as { type: string }).type === 'text')
+        .map((part) => JSON.parse((part as { text: string }).text));
     assert.equal(transcript[0].tool_calls[0].id, 'call-1');
     assert.equal(transcript[1].tool_call_id, 'call-1');
-    assert.deepEqual(result.content[1], { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'YQ==' } });
+    assert.deepEqual(result.content[4], { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'YQ==' } });
+});
+
+test('appending messages preserves the complete previous content prefix including images', () => {
+    const first = requestSchema.parse({ ...payload, messages: [
+        { role: 'user', content: [{ type: 'text', text: '日本語\n"test"' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,YQ==' } }] },
+    ] });
+    const extended = requestSchema.parse({ ...first, messages: [...first.messages,
+        { role: 'assistant', content: 'result' }, { role: 'tool', tool_call_id: 'call-1', content: 'output' }] });
+    const previous = conversation(first).content;
+    const next = conversation(extended).content;
+    assert.deepEqual(next.slice(0, previous.length), previous);
+    assert.equal(JSON.parse((next[1] as { text: string }).text).content[0].text, '日本語\n"test"');
+    assert.equal(JSON.parse((next.at(-1) as { text: string }).text).tool_call_id, 'call-1');
 });
 
 test('OpenCode system and developer instructions are not sent', () => {
