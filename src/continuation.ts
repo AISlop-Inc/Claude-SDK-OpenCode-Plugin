@@ -19,6 +19,30 @@ export function requestIdentity(headers: Record<string, string | string[] | unde
     } catch { return; }
 }
 
+export class SessionQueue {
+    private readonly tails = new Map<string, Promise<void>>();
+
+    async *run<T>(identity: RequestIdentity | undefined, signal: AbortSignal, execute: () => AsyncIterable<T>): AsyncGenerator<T> {
+        if (!identity || identity.kind !== 'primary') {
+            if (!signal.aborted) yield* execute();
+            return;
+        }
+        const key = JSON.stringify([identity.sessionID, identity.agent]);
+        const previous = this.tails.get(key) ?? Promise.resolve();
+        let release!: () => void;
+        const turn = new Promise<void>((resolve) => { release = resolve; });
+        const tail = previous.then(() => turn);
+        this.tails.set(key, tail);
+        try {
+            await previous;
+            if (!signal.aborted) yield* execute();
+        } finally {
+            release();
+            if (this.tails.get(key) === tail) this.tails.delete(key);
+        }
+    }
+}
+
 export type Checkpoint = {
     sessionID: string;
     sdkSessionID: string;
