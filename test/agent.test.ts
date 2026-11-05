@@ -70,6 +70,18 @@ test('SDK result errors preserve upstream status', async () => {
         (error: unknown) => error instanceof Error && 'status' in error && error.status === 400);
 });
 
+test('unavailable deferred tool is not reported as a successful tool call', async () => {
+    const alias = [...toolCatalog(request).names.keys()][0];
+    const mock = mockQuery([
+        { type: 'assistant', parent_tool_use_id: null, message: { stop_reason: 'tool_use', content: [
+            { type: 'tool_use', id: 'call-1', name: alias, input: {} },
+        ] } },
+        { type: 'result', subtype: 'success', is_error: true, terminal_reason: 'tool_deferred_unavailable',
+            stop_reason: 'tool_deferred', result: 'tool unavailable', usage },
+    ]);
+    await assert.rejects(Array.fromAsync(runTurn(request, new AbortController().signal, mock.run)), /tool unavailable/);
+});
+
 test('partial text is not repeated in the assistant message', async () => {
     const mock = mockQuery([
         { type: 'stream_event', parent_tool_use_id: null, event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'OK' } } },
