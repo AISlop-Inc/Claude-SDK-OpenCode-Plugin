@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +23,11 @@ export class ClaudeError extends Error {
 export function sdkOptions(cwd: string): Options {
     return { cwd, tools: [], settingSources: [], strictMcpConfig: true, persistSession: false,
         env: { ...process.env, ENABLE_TOOL_SEARCH: 'false' } };
+}
+
+export function nodeCommand(): string {
+    const local = fileURLToPath(new URL('../node_modules/.bin/node', import.meta.url));
+    return existsSync(local) ? local : 'node';
 }
 
 export function toolCatalog(request: ChatRequest) {
@@ -85,7 +91,7 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
                 effort: effort === 'none' ? undefined : effort === 'minimal' ? 'low' : effort,
                 ...(effort === 'none' ? { thinking: { type: 'disabled' as const } } : {}),
                 mcpServers: tools.length ? { opencode: managed
-                    ? { type: 'stdio', command: 'node', args: [fileURLToPath(new URL('./mcp-stdio.js', import.meta.url))] }
+                    ? { type: 'stdio', command: nodeCommand(), args: [fileURLToPath(new URL('./mcp-stdio.js', import.meta.url))] }
                     : { type: 'sdk', name: 'opencode', instance: server } } : {},
                 hooks: { PreToolUse: [{ hooks: [async (input) => ({
                     hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision:
