@@ -32,7 +32,7 @@ test('SDK defers execution, returns original tool name and counts cache tokens',
         hook = options?.hooks?.PreToolUse?.[0].hooks[0];
     });
     const events = await Array.fromAsync(runTurn(request, new AbortController().signal, mock.run));
-    assert.equal((await hook!()).hookSpecificOutput.permissionDecision, 'defer');
+    assert.equal((await hook!({ hook_event_name: 'PreToolUse', tool_use_id: 'call-1', tool_name: alias })).hookSpecificOutput.permissionDecision, 'defer');
     assert.equal(events[0].type, 'tool');
     if (events[0].type === 'tool') assert.equal(events[0].call.function.name, 'read');
     assert.deepEqual(events[1], { type: 'done', reason: 'tool_calls', usage: {

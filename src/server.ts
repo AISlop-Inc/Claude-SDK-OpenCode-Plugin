@@ -1,9 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { query } from '@anthropic-ai/claude-agent-sdk';
 import { requestSchema, type ChatRequest, type TurnEvent, type ToolCall } from './protocol.js';
 import { ClaudeError, runTurn } from './agent.js';
-import { requestIdentity, SessionQueue, type RequestIdentity } from './continuation.js';
+import { deferredResult, requestIdentity, SessionQueue, type Checkpoint, type RequestIdentity } from './continuation.js';
 
 export type RunTurn = (request: ChatRequest, signal: AbortSignal, identity?: RequestIdentity) => AsyncIterable<TurnEvent>;
 
@@ -23,10 +27,33 @@ function json(response: ServerResponse, status: number, body: unknown) {
     response.end(JSON.stringify(body));
 }
 
-export async function startServer(modelIDs: string[], run: RunTurn = (request, signal) => runTurn(request, signal)) {
+export async function startServer(modelIDs: string[], run?: RunTurn, queryFn: typeof query = query) {
     const token = randomUUID();
     const controllers = new Set<AbortController>();
     const queue = new SessionQueue();
+    const sessions = new Map<string, { cwd: string; checkpoint: Checkpoint }>();
+    async function* managedRun(payload: ChatRequest, signal: AbortSignal, identity?: RequestIdentity): AsyncGenerator<TurnEvent> {
+        if (!identity || identity.kind !== 'primary' || !payload.tools.length || payload.tool_choice === 'none') {
+            yield* runTurn(payload, signal);
+            return;
+        }
+        const key = JSON.stringify([identity.sessionID, identity.agent]);
+        const previous = sessions.get(key);
+        sessions.delete(key);
+        const result = previous && deferredResult(previous.checkpoint, identity.sessionID, payload);
+        if (previous && !result) await rm(previous.cwd, { recursive: true, force: true });
+        if (!result && sessions.size >= 64) { yield* runTurn(payload, signal); return; }
+        const cwd = result && previous ? previous.cwd : await mkdtemp(join(tmpdir(), 'opencode-claude-session-'));
+        let saved = false;
+        try {
+            yield* runTurn(payload, signal, queryFn, { cwd, sessionID: identity.sessionID,
+                ...(result && previous ? { resume: { checkpoint: previous.checkpoint, content: result.content as string } } : {}),
+                save(checkpoint) { sessions.set(key, { cwd, checkpoint }); saved = true; },
+            });
+        } finally {
+            if (!saved) await rm(cwd, { recursive: true, force: true });
+        }
+    }
     const server = createServer((request, response) => {
         void handle(request, response).catch((error) => {
             const message = error instanceof Error ? error.message : String(error);
@@ -79,7 +106,7 @@ export async function startServer(modelIDs: string[], run: RunTurn = (request, s
         }
         try {
             const identity = requestIdentity(request.headers);
-            for await (const event of queue.run(identity, controller.signal, () => run(payload, controller.signal, identity))) {
+            for await (const event of queue.run(identity, controller.signal, () => (run ?? managedRun)(payload, controller.signal, identity))) {
                 if (controller.signal.aborted) break;
                 if (event.type === 'text') {
                     text += event.text;
@@ -119,6 +146,8 @@ export async function startServer(modelIDs: string[], run: RunTurn = (request, s
             const closed = new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
             server.closeAllConnections();
             await closed;
+            await Promise.all([...sessions.values()].map(({ cwd }) => rm(cwd, { recursive: true, force: true })));
+            sessions.clear();
         },
     };
 }
