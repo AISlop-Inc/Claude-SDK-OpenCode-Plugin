@@ -3,6 +3,22 @@ import type { ChatRequest } from './protocol.js';
 
 type Message = ChatRequest['messages'][number];
 
+export type RequestIdentity = { sessionID: string; agent: string; kind: 'primary' | 'compaction' | 'generate' | 'title' };
+
+export function requestIdentity(headers: Record<string, string | string[] | undefined>): RequestIdentity | undefined {
+    const sessionID = headers['x-claude-opencode-session'];
+    const agent = headers['x-claude-opencode-agent'];
+    const kind = headers['x-claude-opencode-kind'];
+    if (typeof sessionID !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(sessionID)) return;
+    if (typeof agent !== 'string' || agent.length > 1024) return;
+    if (kind !== 'primary' && kind !== 'compaction' && kind !== 'generate' && kind !== 'title') return;
+    try {
+        const decoded = decodeURIComponent(agent);
+        if (!decoded || decoded.length > 128) return;
+        return { sessionID, agent: decoded, kind };
+    } catch { return; }
+}
+
 export type Checkpoint = {
     sessionID: string;
     sdkSessionID: string;

@@ -3,8 +3,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { once } from 'node:events';
 import { requestSchema, type ChatRequest, type TurnEvent, type ToolCall } from './protocol.js';
 import { ClaudeError, runTurn } from './agent.js';
+import { requestIdentity, type RequestIdentity } from './continuation.js';
 
-export type RunTurn = (request: ChatRequest, signal: AbortSignal) => AsyncIterable<TurnEvent>;
+export type RunTurn = (request: ChatRequest, signal: AbortSignal, identity?: RequestIdentity) => AsyncIterable<TurnEvent>;
 
 async function readRequest(request: IncomingMessage) {
     const chunks: Buffer[] = [];
@@ -22,7 +23,7 @@ function json(response: ServerResponse, status: number, body: unknown) {
     response.end(JSON.stringify(body));
 }
 
-export async function startServer(modelIDs: string[], run: RunTurn = runTurn) {
+export async function startServer(modelIDs: string[], run: RunTurn = (request, signal) => runTurn(request, signal)) {
     const token = randomUUID();
     const controllers = new Set<AbortController>();
     const server = createServer((request, response) => {
@@ -76,7 +77,7 @@ export async function startServer(modelIDs: string[], run: RunTurn = runTurn) {
             }
         }
         try {
-            for await (const event of run(payload, controller.signal)) {
+            for await (const event of run(payload, controller.signal, requestIdentity(request.headers))) {
                 if (controller.signal.aborted) break;
                 if (event.type === 'text') {
                     text += event.text;
