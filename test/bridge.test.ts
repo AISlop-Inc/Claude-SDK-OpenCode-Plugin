@@ -97,6 +97,25 @@ test('HTTP JSON and SSE preserve tool calls, usage and finish reason', async () 
     }
 });
 
+test('authenticated HTTP requests pass valid session identity to the runner', async () => {
+    let seen: unknown;
+    const server = await startServer(['test-model'], async function* (_request, _signal, identity) {
+        seen = identity;
+        yield { type: 'done', reason: 'stop', usage };
+    });
+    try {
+        const response = await fetch(server.baseURL + '/chat/completions', {
+            method: 'POST', headers: { authorization: 'Bearer ' + server.token,
+                'x-claude-opencode-session': 'ses_123', 'x-claude-opencode-agent': 'build', 'x-claude-opencode-kind': 'primary' },
+            body: JSON.stringify(payload),
+        });
+        assert.equal(response.status, 200);
+        assert.deepEqual(seen, { sessionID: 'ses_123', agent: 'build', kind: 'primary' });
+    } finally {
+        await server.close();
+    }
+});
+
 test('upstream errors never emit successful completion', async () => {
     const run: RunTurn = async function* () { yield { type: 'text', text: 'partial' }; throw new Error('upstream failed'); };
     const server = await startServer(['test-model'], run);

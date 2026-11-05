@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { deferredResult, type Checkpoint } from '../src/continuation.js';
+import { deferredResult, requestIdentity, type Checkpoint } from '../src/continuation.js';
 import { requestSchema } from '../src/protocol.js';
 
 const request = requestSchema.parse({ model: 'test', messages: [{ role: 'user', content: 'read' }],
@@ -11,6 +11,15 @@ const assistant = { role: 'assistant' as const, content: null, tool_calls: [
 const checkpoint: Checkpoint = { sessionID: 'session-a', sdkSessionID: 'sdk-a', request, assistant };
 const result = { role: 'tool' as const, tool_call_id: 'call-1', content: 'contents' };
 const next = requestSchema.parse({ ...request, messages: [...request.messages, assistant, result] });
+
+test('identity requires a bounded session, agent and recognized lane', () => {
+    const headers = { 'x-claude-opencode-session': 'ses_123', 'x-claude-opencode-agent': 'build', 'x-claude-opencode-kind': 'primary' };
+    assert.deepEqual(requestIdentity(headers), { sessionID: 'ses_123', agent: 'build', kind: 'primary' });
+    assert.equal(requestIdentity({ ...headers, 'x-claude-opencode-kind': 'other' }), undefined);
+    assert.equal(requestIdentity({ ...headers, 'x-claude-opencode-session': '' }), undefined);
+    assert.equal(requestIdentity({ ...headers, 'x-claude-opencode-session': 'x'.repeat(129) }), undefined);
+    assert.equal(requestIdentity({}), undefined);
+});
 
 test('accepts only the exact session, history, settings, call and result', () => {
     assert.deepEqual(deferredResult(checkpoint, 'session-a', next), result);
