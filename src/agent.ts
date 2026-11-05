@@ -12,10 +12,10 @@ import type { Checkpoint } from './continuation.js';
 export class ClaudeError extends Error {
     readonly status: number;
 
-    constructor(kind: string, detail: string) {
+    constructor(kind: string, detail: string, statusOverride?: number) {
         super('Claude SDK: ' + kind + (detail ? ': ' + detail : ''));
         const status = Number(detail.match(/API Error: (\d{3})\b/)?.[1]);
-        this.status = kind === 'authentication_failed' ? 401 : status >= 400 && status < 600 ? status : 502;
+        this.status = statusOverride ?? (kind === 'authentication_failed' ? 401 : status >= 400 && status < 600 ? status : 502);
     }
 }
 
@@ -85,7 +85,7 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
                 effort: effort === 'none' ? undefined : effort === 'minimal' ? 'low' : effort,
                 ...(effort === 'none' ? { thinking: { type: 'disabled' as const } } : {}),
                 mcpServers: tools.length ? { opencode: managed
-                    ? { type: 'stdio', command: process.execPath, args: [fileURLToPath(new URL('./mcp-stdio.js', import.meta.url))] }
+                    ? { type: 'stdio', command: 'node', args: [fileURLToPath(new URL('./mcp-stdio.js', import.meta.url))] }
                     : { type: 'sdk', name: 'opencode', instance: server } } : {},
                 hooks: { PreToolUse: [{ hooks: [async (input) => ({
                     hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision:
@@ -101,6 +101,10 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
         let text = '';
         const toolCalls: NonNullable<ChatRequest['messages'][number]['tool_calls']> = [];
         for await (const message of active) {
+            if (managed && tools.length && message.type === 'system' && message.subtype === 'init' &&
+                !message.mcp_servers.some((server) => server.name === 'opencode' && server.status === 'connected')) {
+                throw new ClaudeError('mcp_unavailable', 'OpenCode tools could not connect. Ensure Node.js is available in PATH.', 400);
+            }
             if (message.type === 'stream_event' && message.parent_tool_use_id === null) {
                 const event = message.event;
                 if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {

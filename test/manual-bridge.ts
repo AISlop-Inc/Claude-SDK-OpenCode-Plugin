@@ -13,7 +13,7 @@ try {
             method: 'POST', headers: { authorization: 'Bearer ' + server.token, 'content-type': 'application/json',
                 ...(process.env.NO_RESUME ? {} : { 'x-claude-opencode-session': 'ses_manual_test',
                     'x-claude-opencode-agent': 'test', 'x-claude-opencode-kind': 'primary' }) },
-            body: JSON.stringify({ model, messages, tools, max_tokens: 1024, reasoning_effort: 'low' }),
+            body: JSON.stringify({ model, messages, tools, max_tokens: process.env.FORCE_FALLBACK && messages.length > 1 ? 1023 : 1024, reasoning_effort: 'low' }),
             signal: AbortSignal.timeout(90_000),
         });
         const body = await response.json();
