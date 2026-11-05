@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { once } from 'node:events';
 import { requestSchema, type ChatRequest, type TurnEvent, type ToolCall } from './protocol.js';
 import { ClaudeError, runTurn } from './agent.js';
-import { requestIdentity, type RequestIdentity } from './continuation.js';
+import { requestIdentity, SessionQueue, type RequestIdentity } from './continuation.js';
 
 export type RunTurn = (request: ChatRequest, signal: AbortSignal, identity?: RequestIdentity) => AsyncIterable<TurnEvent>;
 
@@ -26,6 +26,7 @@ function json(response: ServerResponse, status: number, body: unknown) {
 export async function startServer(modelIDs: string[], run: RunTurn = (request, signal) => runTurn(request, signal)) {
     const token = randomUUID();
     const controllers = new Set<AbortController>();
+    const queue = new SessionQueue();
     const server = createServer((request, response) => {
         void handle(request, response).catch((error) => {
             const message = error instanceof Error ? error.message : String(error);
@@ -77,7 +78,8 @@ export async function startServer(modelIDs: string[], run: RunTurn = (request, s
             }
         }
         try {
-            for await (const event of run(payload, controller.signal, requestIdentity(request.headers))) {
+            const identity = requestIdentity(request.headers);
+            for await (const event of queue.run(identity, controller.signal, () => run(payload, controller.signal, identity))) {
                 if (controller.signal.aborted) break;
                 if (event.type === 'text') {
                     text += event.text;
