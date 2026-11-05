@@ -98,7 +98,8 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
                 streamedText = false;
             } else if (message.type === 'result') {
                 const deferred = calls > 0 && message.subtype === 'success' && !message.api_error_status &&
-                    (message.stop_reason === 'tool_deferred' || ['tool_deferred', 'tool_deferred_unavailable'].includes(message.terminal_reason ?? ''));
+                    message.terminal_reason !== 'tool_deferred_unavailable' &&
+                    (message.stop_reason === 'tool_deferred' || message.terminal_reason === 'tool_deferred');
                 if (message.is_error && !deferred && !(calls > 0 && message.subtype === 'error_max_turns')) {
                     const status = 'api_error_status' in message && typeof message.api_error_status === 'number' ? message.api_error_status : undefined;
                     throw new ClaudeError(message.subtype, (status ? 'API Error: ' + status + ' ' : '') +
