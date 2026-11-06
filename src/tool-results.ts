@@ -3,9 +3,10 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ChatRequest } from './protocol.js';
 
-export const defaultToolResultBytes = 16 * 1024;
+export const defaultToolResultBytes = 0;
 
 export function toolResultLimit(value: unknown = process.env.OPENCODE_CLAUDE_TOOL_RESULT_MAX_BYTES): number {
+    // Keep full results unless explicitly opted in: an extra read can cost more than a smaller result saves.
     if (value === undefined) return defaultToolResultBytes;
     const limit = Number(value);
     if ((typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value))) ||

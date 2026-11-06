@@ -10,6 +10,9 @@ export type TurnMetric = {
     at: string; build: string; session: string | null; model: string; lane: string;
     mode: string; reason: string; durationMs: number; messageCount: number; toolCount: number;
     sentBytes: number; outcome: 'complete' | 'error' | 'cancelled'; usage?: Usage;
+    hostRequest?: string;
+    sdkStarted?: boolean;
+    errorStatus?: number;
     payload?: {
         system: PayloadSize; tools: PayloadSize; history: PayloadSize;
         newToolResults: Array<PayloadSize & { tool: string }>;
@@ -53,12 +56,25 @@ export async function recordMetric(metric: TurnMetric, directory = feedbackDirec
 
 export function summarizeMetrics(metrics: TurnMetric[]) {
     const groups: Record<string, { requests: number; errors: number; cancelled: number; resumed: number;
-        sentBytes: number; durationMs: number; measuredUsage: number; input: number; cacheWrite: number; cacheRead: number; output: number; reasons: Record<string, number> }> = {};
+        sentBytes: number; durationMs: number; measuredUsage: number; input: number; cacheWrite: number; cacheRead: number; output: number;
+        quotaBlocked: number; sdkStarts: number; sdkStartMeasured: number; hostIDsMeasured: number; distinctHostIDs: number; reasons: Record<string, number> }> = {};
+    const hostIDs = new Map<string, Set<string>>();
     for (const metric of metrics) {
         const key = JSON.stringify([metric.build, metric.model, metric.lane]);
         const group = groups[key] ??= { requests: 0, errors: 0, cancelled: 0, resumed: 0, sentBytes: 0,
-            durationMs: 0, measuredUsage: 0, input: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasons: {} };
+            durationMs: 0, measuredUsage: 0, input: 0, cacheWrite: 0, cacheRead: 0, output: 0,
+            quotaBlocked: 0, sdkStarts: 0, sdkStartMeasured: 0, hostIDsMeasured: 0, distinctHostIDs: 0, reasons: {} };
         group.requests++;
+        group.quotaBlocked += Number(metric.reason === 'quota-cooldown');
+        group.sdkStarts += Number(metric.sdkStarted === true);
+        group.sdkStartMeasured += Number(metric.sdkStarted !== undefined);
+        if (metric.hostRequest) {
+            const ids = hostIDs.get(key) ?? new Set<string>();
+            ids.add(metric.hostRequest);
+            hostIDs.set(key, ids);
+            group.hostIDsMeasured++;
+            group.distinctHostIDs = ids.size;
+        }
         group.errors += Number(metric.outcome === 'error');
         group.cancelled += Number(metric.outcome === 'cancelled');
         group.resumed += Number(metric.mode.startsWith('resume'));

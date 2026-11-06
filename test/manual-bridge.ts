@@ -11,6 +11,7 @@ try {
     async function send() {
         const response = await fetch(server.baseURL + '/chat/completions', {
             method: 'POST', headers: { authorization: 'Bearer ' + server.token, 'content-type': 'application/json',
+                'x-claude-opencode-test': 'manual-bridge',
                 ...(process.env.NO_RESUME ? {} : { 'x-claude-opencode-session': 'ses_manual_test',
                     'x-claude-opencode-agent': 'test', 'x-claude-opencode-kind': 'primary' }) },
             body: JSON.stringify({ model, messages, tools, max_tokens: process.env.FORCE_FALLBACK && messages.length > 1 ? 1023 : 1024, reasoning_effort: 'low' }),
