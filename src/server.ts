@@ -1,13 +1,14 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { requestSchema, type ChatRequest, type TurnEvent, type ToolCall } from './protocol.js';
+import { conversation, requestSchema, type ChatRequest, type TurnEvent, type ToolCall } from './protocol.js';
 import { ClaudeError, runTurn } from './agent.js';
-import { deferredResult, requestIdentity, SessionQueue, type Checkpoint, type RequestIdentity } from './continuation.js';
+import { continuation, requestIdentity, SessionQueue, type Checkpoint, type RequestIdentity } from './continuation.js';
+import { buildFingerprint, recordMetric, type TurnMetric } from './metrics.js';
 
 export type RunTurn = (request: ChatRequest, signal: AbortSignal, identity?: RequestIdentity) => AsyncIterable<TurnEvent>;
 
@@ -27,31 +28,69 @@ function json(response: ServerResponse, status: number, body: unknown) {
     response.end(JSON.stringify(body));
 }
 
-export async function startServer(modelIDs: string[], run?: RunTurn, queryFn: typeof query = query) {
+export async function startServer(modelIDs: string[], run?: RunTurn, queryFn: typeof query = query,
+    metricSink: (metric: TurnMetric) => Promise<void> = queryFn === query ? recordMetric : async () => {}) {
     const token = randomUUID();
     const controllers = new Set<AbortController>();
     const queue = new SessionQueue();
     const sessions = new Map<string, { cwd: string; checkpoint: Checkpoint }>();
+    const build = await buildFingerprint();
     async function* managedRun(payload: ChatRequest, signal: AbortSignal, identity?: RequestIdentity): AsyncGenerator<TurnEvent> {
-        if (!identity || identity.kind !== 'primary' || !payload.tools.length || payload.tool_choice === 'none') {
-            yield* runTurn(payload, signal);
+        const started = Date.now();
+        const metric: TurnMetric = { at: new Date().toISOString(), build,
+            session: identity ? createHash('sha256').update(identity.sessionID).digest('hex').slice(0, 16) : null,
+            model: payload.model, lane: identity?.kind ?? 'unknown', mode: 'bootstrap', reason: 'no-checkpoint',
+            durationMs: 0, messageCount: payload.messages.length, toolCount: payload.tools.length,
+            sentBytes: Buffer.byteLength(JSON.stringify(conversation(payload).content)), outcome: 'error' };
+        try {
+            for await (const event of execute()) {
+                if (event.type === 'done') { metric.outcome = 'complete'; metric.usage = event.usage; }
+                yield event;
+            }
+        } finally {
+            metric.durationMs = Date.now() - started;
+            if (signal.aborted && metric.outcome !== 'complete') metric.outcome = 'cancelled';
+            try { await metricSink(metric); } catch { console.error('Claude feedback: unable to save turn metrics'); }
+        }
+        async function* execute(): AsyncGenerator<TurnEvent> {
+        if (!identity || identity.kind !== 'primary') {
+            metric.reason = identity ? 'auxiliary-lane' : 'missing-identity';
+            yield* runTurn(payload, signal, queryFn);
             return;
         }
         const key = JSON.stringify([identity.sessionID, identity.agent]);
         const previous = sessions.get(key);
         sessions.delete(key);
-        const result = previous && deferredResult(previous.checkpoint, identity.sessionID, payload);
+        const result = previous && continuation(previous.checkpoint, identity.sessionID, payload);
+        if (previous && !result) metric.reason = 'history-or-settings-changed';
         if (previous && !result) await rm(previous.cwd, { recursive: true, force: true });
-        if (!result && sessions.size >= 64) { yield* runTurn(payload, signal); return; }
+        if (!result && sessions.size >= 64) {
+            // Evict an inactive checkpoint rather than permanently disabling continuity at capacity.
+            const oldest = sessions.entries().next().value!;
+            sessions.delete(oldest[0]);
+            await rm(oldest[1].cwd, { recursive: true, force: true });
+            metric.reason = 'capacity-eviction';
+        }
+        if (result) {
+            metric.mode = 'resume-' + result.kind;
+            metric.reason = 'exact-continuation';
+            metric.sentBytes = Buffer.byteLength(JSON.stringify(result.kind === 'tools' ? result.messages.map((message) => message.content) :
+                conversation({ ...payload, messages: result.messages }).content));
+        }
         const cwd = result && previous ? previous.cwd : await mkdtemp(join(tmpdir(), 'opencode-claude-session-'));
         let saved = false;
         try {
             yield* runTurn(payload, signal, queryFn, { cwd, sessionID: identity.sessionID,
-                ...(result && previous ? { resume: { checkpoint: previous.checkpoint, content: result.content as string } } : {}),
-                save(checkpoint) { sessions.set(key, { cwd, checkpoint }); saved = true; },
+                ...(result && previous ? { resume: { checkpoint: previous.checkpoint, ...result } } : {}),
+                save(checkpoint) {
+                    if (signal.aborted) return;
+                    sessions.set(key, { cwd, checkpoint });
+                    saved = true;
+                },
             });
         } finally {
             if (!saved) await rm(cwd, { recursive: true, force: true });
+        }
         }
     }
     const server = createServer((request, response) => {

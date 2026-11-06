@@ -50,23 +50,35 @@ export type Checkpoint = {
     assistant: Message;
 };
 
-function fingerprint(value: unknown): string {
+export function fingerprint(value: unknown): string {
     return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+export function continuation(checkpoint: Checkpoint, sessionID: string, request: ChatRequest):
+    { kind: 'user' | 'tools'; messages: Message[] } | undefined {
+    if (sessionID !== checkpoint.sessionID || !checkpoint.sdkSessionID) return;
+    const { messages: before, stream: _priorStream, ...priorSettings } = checkpoint.request;
+    const { messages, stream: _stream, ...settings } = request;
+    if (messages.length <= before.length + 1) return;
+    if (fingerprint(settings) !== fingerprint(priorSettings)) return;
+    if (fingerprint(messages.slice(0, before.length)) !== fingerprint(before)) return;
+    if (fingerprint(messages[before.length]) !== fingerprint(checkpoint.assistant)) return;
+    const appended = messages.slice(before.length + 1);
+    const calls = checkpoint.assistant.tool_calls ?? [];
+    if (!calls.length) {
+        if (appended.length === 1 && appended[0].role === 'user') return { kind: 'user', messages: appended };
+        return;
+    }
+    const ids = new Set(calls.map((call) => call.id));
+    if (ids.size !== calls.length || appended.length !== calls.length) return;
+    for (const message of appended) {
+        if (message.role !== 'tool' || typeof message.content !== 'string' || !message.tool_call_id || !ids.delete(message.tool_call_id)) return;
+    }
+    return { kind: 'tools', messages: appended };
 }
 
 /** Return the single external tool result only when it continues this exact checkpoint. */
 export function deferredResult(checkpoint: Checkpoint, sessionID: string, request: ChatRequest): Message | undefined {
-    if (!sessionID || sessionID !== checkpoint.sessionID || !checkpoint.sdkSessionID) return;
-    const { messages: before, stream: _previousStream, ...previousSettings } = checkpoint.request;
-    const { messages, stream: _stream, ...settings } = request;
-    if (fingerprint(settings) !== fingerprint(previousSettings)) return;
-    if (messages.length !== before.length + 2) return;
-    if (fingerprint(messages.slice(0, before.length)) !== fingerprint(before)) return;
-    const assistant = messages[before.length];
-    if (assistant.role !== 'assistant' || fingerprint(assistant) !== fingerprint(checkpoint.assistant)) return;
-    if (assistant.tool_calls?.length !== 1) return;
-    const result = messages[before.length + 1];
-    if (result.role !== 'tool' || result.tool_call_id !== assistant.tool_calls[0].id) return;
-    if (typeof result.content !== 'string') return;
-    return result;
+    const result = continuation(checkpoint, sessionID, request);
+    return result?.kind === 'tools' && result.messages.length === 1 ? result.messages[0] : undefined;
 }

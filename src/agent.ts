@@ -50,7 +50,7 @@ export async function neverExecute(): Promise<never> {
 export type ManagedTurn = {
     cwd: string;
     sessionID: string;
-    resume?: { checkpoint: Checkpoint; content: string };
+    resume?: { checkpoint: Checkpoint; kind: 'user' | 'tools'; messages: ChatRequest['messages'] };
     save: (checkpoint: Checkpoint) => void;
 };
 
@@ -73,16 +73,18 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
         const maxTokens = request.max_completion_tokens ?? request.max_tokens;
         if (maxTokens) options.env!.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxTokens);
         const effort = request.reasoning_effort;
-        const priorCall = managed?.resume?.checkpoint.assistant.tool_calls?.[0];
+        const priorCalls = managed?.resume?.kind === 'tools' ? managed.resume.checkpoint.assistant.tool_calls ?? [] : [];
         const configPath = join(cwd, 'mcp-config.json');
-        if (managed) await writeFile(configPath, JSON.stringify({ tools, ...(priorCall ? { result: {
-            name: [...names.entries()].find(([, original]) => original === priorCall.function.name)?.[0].replace(/^mcp__opencode__/, ''),
-            input: JSON.parse(priorCall.function.arguments), content: managed.resume!.content,
-        } } : {}) }), { mode: 0o600 });
+        if (managed) await writeFile(configPath, JSON.stringify({ tools, results: priorCalls.map((call) => ({
+            id: call.id,
+            name: [...names.entries()].find(([, original]) => original === call.function.name)?.[0].replace(/^mcp__opencode__/, ''),
+            content: managed.resume!.messages.find((message) => message.tool_call_id === call.id)!.content,
+        })) }), { mode: 0o600 });
         active = queryFn({
             prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
-                if (managed?.resume) { await promptReleased; return; }
-                yield { type: 'user', message: { role: 'user', content: transcript.content as SDKUserMessage['message']['content'] }, parent_tool_use_id: null };
+                if (managed?.resume?.kind === 'tools') { await promptReleased; return; }
+                const content = managed?.resume ? conversation({ ...request, messages: managed.resume.messages }).content : transcript.content;
+                yield { type: 'user', message: { role: 'user', content: content as SDKUserMessage['message']['content'] }, parent_tool_use_id: null };
             })(),
             options: { ...options, model: request.model, systemPrompt: transcript.system,
                 ...(managed ? { persistSession: true, ...(managed.resume ? { resume: managed.resume.checkpoint.sdkSessionID } : {}),
@@ -93,11 +95,12 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
                 mcpServers: tools.length ? { opencode: managed
                     ? { type: 'stdio', command: nodeCommand(), args: [fileURLToPath(new URL('./mcp-stdio.js', import.meta.url))] }
                     : { type: 'sdk', name: 'opencode', instance: server } } : {},
-                hooks: { PreToolUse: [{ hooks: [async (input) => ({
-                    hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision:
-                        input.hook_event_name === 'PreToolUse' && priorCall?.id === input.tool_use_id &&
-                        names.get(input.tool_name) === priorCall.function.name ? 'allow' : 'defer' },
-                })] }] },
+                hooks: { PreToolUse: [{ hooks: [async (input) => {
+                    const call = input.hook_event_name === 'PreToolUse' ? priorCalls.find((call) => call.id === input.tool_use_id &&
+                        names.get(input.tool_name) === call.function.name) : undefined;
+                    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: call ? 'allow' : 'defer',
+                        ...(call ? { updatedInput: { __opencode_result_id: call.id } } : {}) } };
+                }] }] },
             },
         });
         let streamedText = false;
@@ -144,10 +147,10 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
                         (message.subtype === 'success' ? message.result : message.errors.join('; ')));
                 }
                 const usage = message.usage;
-                if (managed && deferred && toolCalls.length === 1 && message.session_id &&
-                    message.subtype === 'success' && message.deferred_tool_use?.id === toolCalls[0].id) {
+                if (managed && message.session_id && message.subtype === 'success' && (!message.is_error || deferred) &&
+                    ((!calls && stopReason !== 'max_tokens') || (deferred && toolCalls.some((call) => call.id === message.deferred_tool_use?.id)))) {
                     managed.save({ sessionID: managed.sessionID, sdkSessionID: message.session_id, request,
-                        assistant: { role: 'assistant', content: text || null, tool_calls: toolCalls } });
+                        assistant: { role: 'assistant', content: text || null, ...(calls ? { tool_calls: toolCalls } : {}) } });
                 }
                 const cached = usage.cache_read_input_tokens ?? 0;
                 const input = usage.input_tokens + (usage.cache_creation_input_tokens ?? 0) + cached;

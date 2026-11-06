@@ -129,7 +129,7 @@ test('matching single-tool continuation resumes SDK with only the external resul
         const sdkUsage = { input_tokens: 1, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 };
         if (queries === 1) {
             assert.equal(options!.resume, undefined);
-            assert.equal(config.result, undefined);
+            assert.deepEqual(config.results, []);
             yield { type: 'assistant', parent_tool_use_id: null, message: { stop_reason: 'tool_use', content: [
                 { type: 'tool_use', id: 'call-1', name: alias, input: { path: 'a' } },
             ] } } as SDKMessage;
@@ -137,7 +137,7 @@ test('matching single-tool continuation resumes SDK with only the external resul
                 deferred_tool_use: { id: 'call-1', name: alias, input: { path: 'a' } }, usage: sdkUsage } as SDKMessage;
         } else {
             assert.equal(options!.resume, 'sdk-session');
-            assert.deepEqual(config.result, { name: alias.replace('mcp__opencode__', ''), input: { path: 'a' }, content: 'external result' });
+            assert.deepEqual(config.results, [{ id: 'call-1', name: alias.replace('mcp__opencode__', ''), content: 'external result' }]);
             const hook = options!.hooks!.PreToolUse![0].hooks[0];
             const decision = await hook({ hook_event_name: 'PreToolUse', tool_use_id: 'call-1', tool_name: alias } as never, 'call-1', {} as never);
             assert.equal(decision.hookSpecificOutput?.permissionDecision, 'allow');
