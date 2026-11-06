@@ -2,12 +2,14 @@ import { Model, Plugin, Provider } from '@opencode/plugin';
 import { discoverModels } from './agent.js';
 import { startServer } from './server.js';
 import { filterInstructions } from './instructions.js';
+import { toolResultLimit } from './tool-results.js';
 
 export default Plugin.define({
     id: 'claude-agent-sdk',
     async setup(ctx) {
+        const resultBudget = toolResultLimit(ctx.options.toolResultMaxBytes);
         const catalog = await discoverModels();
-        const server = await startServer(catalog.map((model) => model.id));
+        const server = await startServer(catalog.map((model) => model.id), undefined, undefined, undefined, resultBudget);
         const providerID = Provider.ID.make('claude-agent-sdk');
         try {
             await ctx.session.hook('model.request', (event) => {

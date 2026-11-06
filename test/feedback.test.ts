@@ -71,6 +71,75 @@ test('multiple external results are matched by ID, regardless of result ordering
     assert.equal(continuation(checkpoint, 'ses_a', { ...request, messages: [...request.messages, assistant] }), undefined);
 });
 
+test('large resumed results are offloaded without changing host history or the following continuation', async () => {
+    const content = 'FULL_RESULT_SECRET\n'.repeat(5000);
+    const metrics: TurnMetric[] = [];
+    let queries = 0;
+    let retainedFile = '';
+    const mock = (({ options }: Parameters<typeof query>[0]) => Object.assign((async function* () {
+        const config = JSON.parse(await readFile(options!.env!.OPENCODE_CLAUDE_MCP_CONFIG!, 'utf8'));
+        queries++;
+        if (queries === 1) {
+            const name = 'mcp__opencode__' + config.tools[0].name;
+            yield { type: 'assistant', parent_tool_use_id: null, message: { stop_reason: 'tool_use',
+                content: [{ type: 'tool_use', id: 'big-result', name, input: {} }] } } as SDKMessage;
+            yield { type: 'result', subtype: 'success', is_error: false, session_id: 'sdk-large',
+                terminal_reason: 'tool_deferred', deferred_tool_use: { id: 'big-result' },
+                usage: { input_tokens: 1, output_tokens: 1 } } as SDKMessage;
+            return;
+        }
+        assert.equal(options!.resume, 'sdk-large');
+        if (queries === 2) {
+            const preview = config.results[0].content as string;
+            assert.ok(Buffer.byteLength(preview) <= 16384);
+            assert.match(preview, /Tool result preview/);
+            retainedFile = JSON.parse(preview.match(/saved to (".*")\. Use read/)![1]);
+            assert.equal(await readFile(retainedFile, 'utf8'), content);
+            const name = 'mcp__opencode__' + config.tools[0].name;
+            yield { type: 'assistant', parent_tool_use_id: null, message: { stop_reason: 'tool_use',
+                content: [{ type: 'tool_use', id: 'fetch-result', name, input: { path: retainedFile, offset: 1, limit: 2 } }] } } as SDKMessage;
+            yield { type: 'result', subtype: 'success', is_error: false, session_id: 'sdk-large',
+                terminal_reason: 'tool_deferred', deferred_tool_use: { id: 'fetch-result' },
+                usage: { input_tokens: 1, output_tokens: 1 } } as SDKMessage;
+            return;
+        } else if (queries === 3) {
+            assert.equal(config.results[0].id, 'fetch-result');
+            assert.equal(config.results[0].content, content.slice(0, 64));
+        } else assert.deepEqual(config.results, []);
+        yield { type: 'assistant', parent_tool_use_id: null, message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'done' }] } } as SDKMessage;
+        yield { type: 'result', subtype: 'success', is_error: false, session_id: 'sdk-large',
+            usage: { input_tokens: 1, output_tokens: 1 } } as SDKMessage;
+    })(), { close() {} })) as typeof query;
+    const server = await startServer(['test'], undefined, mock, async (metric) => { metrics.push(metric); });
+    try {
+        const headers = { authorization: 'Bearer ' + server.token, 'x-claude-opencode-session': 'ses_large',
+            'x-claude-opencode-agent': 'build', 'x-claude-opencode-kind': 'primary' };
+        const send = async (messages: unknown[]) => {
+            const response = await fetch(server.baseURL + '/chat/completions', { method: 'POST', headers,
+                body: JSON.stringify({ model: 'test', tools: [{ type: 'function', function: { name: 'read' } }], messages }) });
+            assert.equal(response.status, 200);
+            return (await response.json()).choices[0].message;
+        };
+        const initial = [{ role: 'user', content: 'read a large result' }];
+        const first = await send(initial);
+        const history = [...initial, first, { role: 'tool', tool_call_id: 'big-result', content }];
+        const second = await send(history);
+        assert.equal(second.tool_calls[0].function.name, 'read');
+        const retrieved = (await readFile(retainedFile, 'utf8')).slice(0, 64);
+        const following = [...history, second, { role: 'tool', tool_call_id: 'fetch-result', content: retrieved }];
+        const third = await send(following);
+        await send([...following, third, { role: 'user', content: 'continue' }]);
+        assert.equal(history[2].content, content);
+        assert.deepEqual(metrics.map((metric) => metric.mode), ['bootstrap', 'resume-tools', 'resume-tools', 'resume-user']);
+        assert.equal(metrics[1].toolResults?.offloaded, 1);
+        assert.equal(metrics[1].toolResults?.originalBytes, Buffer.byteLength(content));
+        assert.ok(metrics[1].toolResults!.deliveredBytes <= 16384);
+        assert.equal(metrics[2].toolResults?.retrievals, 1);
+        assert.doesNotMatch(JSON.stringify(metrics), /FULL_RESULT_SECRET|tool-result-[a-f0-9]+\.txt/);
+    } finally { await server.close(); }
+    await assert.rejects(readFile(retainedFile), /ENOENT/);
+});
+
 test('real MCP subprocess returns distinct results for identical tool arguments and refuses replay', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'claude-feedback-test-'));
     const path = join(cwd, 'config.json');

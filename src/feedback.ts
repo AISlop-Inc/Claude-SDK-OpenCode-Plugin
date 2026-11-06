@@ -1,6 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { feedbackDirectory, summarizeMetrics, type TurnMetric } from './metrics.js';
+import { feedbackDirectory, summarizeMetrics, summarizePayloads, type TurnMetric } from './metrics.js';
 
 const end = Date.now();
 const start = end - 24 * 60 * 60 * 1000;
@@ -22,6 +22,7 @@ for (const file of files.filter((name) => dates.has(name.replace(/\.jsonl$/, '')
 }
 console.log(JSON.stringify({ start: new Date(start).toISOString(), end: new Date(end).toISOString(),
     observedRequests: metrics.length, invalidLines, groups: summarizeMetrics(metrics),
+    sameModelPayloads: summarizePayloads(metrics),
     limitations: ['Local SDK-bound payload bytes, not model input token savings.',
         'Errors may have consumed upstream tokens without returning usage.',
         'Quota includes other Claude clients; resets and workload differences prevent causal daily savings estimates.'] }, null, 2));
