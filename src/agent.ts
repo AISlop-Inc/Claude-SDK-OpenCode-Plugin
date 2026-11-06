@@ -9,6 +9,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { conversation, type ChatRequest, type TurnEvent } from './protocol.js';
 import { stableJSON, type Checkpoint } from './continuation.js';
+import { boundToolResults, toolResultLimit } from './tool-results.js';
 
 export class ClaudeError extends Error {
     readonly status: number;
@@ -73,6 +74,8 @@ export type ManagedTurn = {
     sessionID: string;
     resume?: { checkpoint: Checkpoint; kind: 'user' | 'tools'; messages: ChatRequest['messages'] };
     save: (checkpoint: Checkpoint) => void;
+    toolResultMaxBytes?: number;
+    resultsMeasured?: (result: { offloaded: number; originalBytes: number; deliveredBytes: number; storageErrors: number; retrievals: number; sentBytes: number; limitBytes: number }) => void;
 };
 
 export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryFn = query, managed?: ManagedTurn): AsyncGenerator<TurnEvent> {
@@ -95,11 +98,22 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
         if (maxTokens) options.env!.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxTokens);
         const effort = request.reasoning_effort;
         const priorCalls = managed?.resume?.kind === 'tools' ? managed.resume.checkpoint.assistant.tool_calls ?? [] : [];
+        const delivered = managed?.resume?.kind === 'tools'
+            ? await boundToolResults(managed.resume.messages, cwd,
+                [...names.values()].includes('read') ? managed.toolResultMaxBytes ?? toolResultLimit() : 0) : undefined;
+        const retrievals = priorCalls.filter((call) => {
+            if (call.function.name !== 'read') return false;
+            const args = JSON.parse(call.function.arguments);
+            const path = args?.path ?? args?.filePath;
+            return typeof path === 'string' && /^tool-result-[a-f0-9]{64}\.txt$/.test(path.slice(cwd.length + 1)) && path.startsWith(cwd + '/');
+        }).length;
+        if (delivered) managed?.resultsMeasured?.({ ...delivered, retrievals,
+            sentBytes: Buffer.byteLength(JSON.stringify(delivered.messages.map((message) => message.content))) });
         const configPath = join(cwd, 'mcp-config.json');
         if (managed) await writeFile(configPath, JSON.stringify({ tools, results: priorCalls.map((call) => ({
             id: call.id,
             name: [...names.entries()].find(([, original]) => original === call.function.name)?.[0].replace(/^mcp__opencode__/, ''),
-            content: managed.resume!.messages.find((message) => message.tool_call_id === call.id)!.content,
+            content: delivered!.messages.find((message) => message.tool_call_id === call.id)!.content,
         })) }), { mode: 0o600 });
         active = queryFn({
             prompt: (async function* (): AsyncGenerator<SDKUserMessage> {

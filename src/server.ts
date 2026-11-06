@@ -8,7 +8,8 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { conversation, requestSchema, type ChatRequest, type TurnEvent, type ToolCall } from './protocol.js';
 import { ClaudeError, runTurn } from './agent.js';
 import { continuation, rebuildReason, requestIdentity, SessionQueue, type Checkpoint, type RequestIdentity } from './continuation.js';
-import { buildFingerprint, recordMetric, type TurnMetric } from './metrics.js';
+import { buildFingerprint, measurePayload, recordMetric, type TurnMetric } from './metrics.js';
+import { toolResultLimit } from './tool-results.js';
 
 export type RunTurn = (request: ChatRequest, signal: AbortSignal, identity?: RequestIdentity) => AsyncIterable<TurnEvent>;
 
@@ -29,7 +30,8 @@ function json(response: ServerResponse, status: number, body: unknown) {
 }
 
 export async function startServer(modelIDs: string[], run?: RunTurn, queryFn: typeof query = query,
-    metricSink: (metric: TurnMetric) => Promise<void> = queryFn === query ? recordMetric : async () => {}) {
+    metricSink: (metric: TurnMetric) => Promise<void> = queryFn === query ? recordMetric : async () => {},
+    toolResultMaxBytes = toolResultLimit()) {
     const token = randomUUID();
     const controllers = new Set<AbortController>();
     const queue = new SessionQueue();
@@ -37,11 +39,12 @@ export async function startServer(modelIDs: string[], run?: RunTurn, queryFn: ty
     const build = await buildFingerprint();
     async function* managedRun(payload: ChatRequest, signal: AbortSignal, identity?: RequestIdentity): AsyncGenerator<TurnEvent> {
         const started = Date.now();
+        const sizes = measurePayload(payload);
         const metric: TurnMetric = { at: new Date().toISOString(), build,
             session: identity ? createHash('sha256').update(identity.sessionID).digest('hex').slice(0, 16) : null,
             model: payload.model, lane: identity?.kind ?? 'unknown', mode: 'bootstrap', reason: 'no-checkpoint',
             durationMs: 0, messageCount: payload.messages.length, toolCount: payload.tools.length,
-            sentBytes: Buffer.byteLength(JSON.stringify(conversation(payload).content)), outcome: 'error' };
+            sentBytes: sizes.history.bytes, outcome: 'error', payload: sizes };
         try {
             for await (const event of execute()) {
                 if (event.type === 'done') { metric.outcome = 'complete'; metric.usage = event.usage; }
@@ -80,8 +83,13 @@ export async function startServer(modelIDs: string[], run?: RunTurn, queryFn: ty
         const cwd = result && previous ? previous.cwd : await mkdtemp(join(tmpdir(), 'opencode-claude-session-'));
         let saved = false;
         try {
-            yield* runTurn(payload, signal, queryFn, { cwd, sessionID: identity.sessionID,
+            yield* runTurn(payload, signal, queryFn, { cwd, sessionID: identity.sessionID, toolResultMaxBytes,
                 ...(result && previous ? { resume: { checkpoint: previous.checkpoint, ...result } } : {}),
+                resultsMeasured(result) {
+                    const { offloaded, originalBytes, deliveredBytes, storageErrors, retrievals, limitBytes } = result;
+                    metric.toolResults = { offloaded, originalBytes, deliveredBytes, storageErrors, retrievals, limitBytes };
+                    metric.sentBytes = result.sentBytes;
+                },
                 save(checkpoint) {
                     if (signal.aborted) return;
                     sessions.set(key, { cwd, checkpoint });
