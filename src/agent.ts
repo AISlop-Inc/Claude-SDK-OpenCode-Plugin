@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { query, type Options, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -25,9 +25,28 @@ export function sdkOptions(cwd: string): Options {
         env: { ...process.env, ENABLE_TOOL_SEARCH: 'false' } };
 }
 
-export function nodeCommand(): string {
-    const local = fileURLToPath(new URL('../node_modules/.bin/node', import.meta.url));
-    return existsSync(local) ? local : 'node';
+function installedNodes(directory: string): string[] {
+    try {
+        return readdirSync(directory)
+            .filter((name) => /^v?\d+\.\d+\.\d+$/.test(name))
+            .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+            .map((version) => join(directory, version, 'bin', 'node'));
+    } catch {
+        return [];
+    }
+}
+
+// An app started outside a shell inherits launchd's PATH, which holds no version manager or Homebrew Node.
+export function nodeCommand(home = homedir(), path = process.env.PATH ?? ''): string {
+    const candidates = [
+        fileURLToPath(new URL('../node_modules/.bin/node', import.meta.url)),
+        ...path.split(delimiter).filter(Boolean).map((directory) => join(directory, 'node')),
+        ...installedNodes(join(home, '.local', 'share', 'mise', 'installs', 'node')),
+        ...installedNodes(join(home, '.nvm', 'versions', 'node')),
+        '/opt/homebrew/bin/node',
+        '/usr/local/bin/node',
+    ];
+    return candidates.find((candidate) => existsSync(candidate)) ?? 'node';
 }
 
 export function toolCatalog(request: ChatRequest) {

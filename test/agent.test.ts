@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { runTurn, toolCatalog } from '../src/agent.js';
+import { nodeCommand, runTurn, toolCatalog } from '../src/agent.js';
 import { requestSchema } from '../src/protocol.js';
 
 const request = requestSchema.parse({ model: 'test-model', messages: [{ role: 'user', content: 'Read a file' }],
@@ -112,4 +112,23 @@ test('SDK error details survive and query is closed', async () => {
     } }]);
     await assert.rejects(Array.fromAsync(runTurn(request, new AbortController().signal, mock.run)), /Specific upstream failure/);
     assert.equal(mock.isClosed(), true);
+});
+
+test('finds the newest installed Node when PATH has none', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'node-command-'));
+    try {
+        const installs = join(home, '.local/share/mise/installs/node');
+        for (const version of ['9.11.2', '24.1.0', 'lts']) {
+            await mkdir(join(installs, version, 'bin'), { recursive: true });
+            await writeFile(join(installs, version, 'bin/node'), '');
+        }
+        assert.equal(nodeCommand(home, ''), join(installs, '24.1.0/bin/node'));
+
+        const bin = join(home, 'bin');
+        await mkdir(bin);
+        await writeFile(join(bin, 'node'), '');
+        assert.equal(nodeCommand(home, bin), join(bin, 'node'));
+    } finally {
+        await rm(home, { recursive: true, force: true });
+    }
 });
