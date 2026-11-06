@@ -1,14 +1,14 @@
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { query, type Options, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { conversation, type ChatRequest, type TurnEvent } from './protocol.js';
-import type { Checkpoint } from './continuation.js';
+import { stableJSON, type Checkpoint } from './continuation.js';
 
 export class ClaudeError extends Error {
     readonly status: number;
@@ -16,7 +16,9 @@ export class ClaudeError extends Error {
     constructor(kind: string, detail: string, statusOverride?: number) {
         super('Claude SDK: ' + kind + (detail ? ': ' + detail : ''));
         const status = Number(detail.match(/API Error: (\d{3})\b/)?.[1]);
-        this.status = statusOverride ?? (kind === 'authentication_failed' ? 401 : status >= 400 && status < 600 ? status : 502);
+        // A subscription quota lock is not a transient upstream failure: OpenCode retries 5xx responses.
+        const quotaLocked = kind === 'rate_limit' && /(?:hit your .*limit|out of extra usage)/i.test(detail);
+        this.status = statusOverride ?? (kind === 'authentication_failed' ? 401 : quotaLocked ? 400 : status >= 400 && status < 600 ? status : 502);
     }
 }
 
@@ -25,9 +27,28 @@ export function sdkOptions(cwd: string): Options {
         env: { ...process.env, ENABLE_TOOL_SEARCH: 'false' } };
 }
 
-export function nodeCommand(): string {
-    const local = fileURLToPath(new URL('../node_modules/.bin/node', import.meta.url));
-    return existsSync(local) ? local : 'node';
+function installedNodes(directory: string): string[] {
+    try {
+        return readdirSync(directory)
+            .filter((name) => /^v?\d+\.\d+\.\d+$/.test(name))
+            .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+            .map((version) => join(directory, version, 'bin', 'node'));
+    } catch {
+        return [];
+    }
+}
+
+// An app started outside a shell inherits launchd's PATH, which holds no version manager or Homebrew Node.
+export function nodeCommand(home = homedir(), path = process.env.PATH ?? ''): string {
+    const candidates = [
+        fileURLToPath(new URL('../node_modules/.bin/node', import.meta.url)),
+        ...path.split(delimiter).filter(Boolean).map((directory) => join(directory, 'node')),
+        ...installedNodes(join(home, '.local', 'share', 'mise', 'installs', 'node')),
+        ...installedNodes(join(home, '.nvm', 'versions', 'node')),
+        '/opt/homebrew/bin/node',
+        '/usr/local/bin/node',
+    ];
+    return candidates.find((candidate) => existsSync(candidate)) ?? 'node';
 }
 
 export function toolCatalog(request: ChatRequest) {
@@ -38,7 +59,7 @@ export function toolCatalog(request: ChatRequest) {
         if ([...names.values()].includes(definition.name)) throw new Error('Duplicate tool: ' + definition.name);
         names.set('mcp__opencode__' + alias, definition.name);
         return { name: alias, description: definition.name + ': ' + (definition.description ?? ''),
-            inputSchema: definition.parameters ?? { type: 'object', properties: {} } };
+            inputSchema: JSON.parse(stableJSON(definition.parameters ?? { type: 'object', properties: {} })) };
     });
     return { names, tools };
 }

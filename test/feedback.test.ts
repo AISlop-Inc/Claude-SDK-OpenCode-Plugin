@@ -10,6 +10,16 @@ import { startServer } from '../src/server.js';
 import { continuation } from '../src/continuation.js';
 import { requestSchema } from '../src/protocol.js';
 import { recordMetric, summarizeMetrics, type TurnMetric } from '../src/metrics.js';
+import { toolCatalog } from '../src/agent.js';
+
+test('equivalent schema objects produce identical MCP definitions for caching', () => {
+    const build = (parameters: Record<string, unknown>) => toolCatalog(requestSchema.parse({ model: 'test',
+        messages: [{ role: 'user', content: 'hello' }], tools: [{ type: 'function', function: { name: 'read', parameters } }] })).tools;
+    const first = build({ type: 'object', properties: { path: { type: 'string', description: 'Path' } }, required: ['path'] });
+    const second = build({ required: ['path'], properties: { path: { description: 'Path', type: 'string' } }, type: 'object' });
+    assert.equal(JSON.stringify(first), JSON.stringify(second));
+    assert.notEqual(JSON.stringify(first), JSON.stringify(build({ type: 'object', properties: { path: { type: 'number' } } })));
+});
 
 test('completed conversations resume with only the new user message, including no-tools requests', async () => {
     for (const tools of [[], [{ type: 'function', function: { name: 'read' } }]]) {
@@ -40,7 +50,7 @@ test('completed conversations resume with only the new user message, including n
             assert.equal(seen[2].resume, undefined);
         } finally { await server.close(); }
         assert.deepEqual(metrics.map((metric) => metric.mode), ['bootstrap', 'resume-user', 'bootstrap']);
-        assert.equal(metrics[2].reason, 'history-or-settings-changed');
+        assert.equal(metrics[2].reason, 'history-changed');
         assert.ok(metrics[1].sentBytes < metrics[0].sentBytes / 10);
     }
 });

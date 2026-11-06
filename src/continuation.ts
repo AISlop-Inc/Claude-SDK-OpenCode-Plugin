@@ -50,8 +50,25 @@ export type Checkpoint = {
     assistant: Message;
 };
 
+export function stableJSON(value: unknown): string {
+    return JSON.stringify(value, (_, item) =>
+        item && typeof item === 'object' && !Array.isArray(item)
+            ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]])) : item);
+}
+
 export function fingerprint(value: unknown): string {
-    return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+    return createHash('sha256').update(stableJSON(value)).digest('hex');
+}
+
+export function rebuildReason(checkpoint: Checkpoint, request: ChatRequest): string {
+    if (checkpoint.request.model !== request.model) return 'model-changed';
+    const { messages: before, stream: _priorStream, ...priorSettings } = checkpoint.request;
+    const { messages, stream: _stream, ...settings } = request;
+    if (fingerprint(settings) !== fingerprint(priorSettings)) return 'settings-changed';
+    if (fingerprint(messages.slice(0, before.length)) !== fingerprint(before)) return 'history-changed';
+    if (messages.length <= before.length) return 'unsupported-append';
+    if (fingerprint(messages[before.length]) !== fingerprint(checkpoint.assistant)) return 'assistant-changed';
+    return 'unsupported-append';
 }
 
 export function continuation(checkpoint: Checkpoint, sessionID: string, request: ChatRequest):
