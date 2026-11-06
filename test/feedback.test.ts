@@ -110,7 +110,7 @@ test('large resumed results are offloaded without changing host history or the f
         yield { type: 'result', subtype: 'success', is_error: false, session_id: 'sdk-large',
             usage: { input_tokens: 1, output_tokens: 1 } } as SDKMessage;
     })(), { close() {} })) as typeof query;
-    const server = await startServer(['test'], undefined, mock, async (metric) => { metrics.push(metric); });
+    const server = await startServer(['test'], undefined, mock, async (metric) => { metrics.push(metric); }, 16384);
     try {
         const headers = { authorization: 'Bearer ' + server.token, 'x-claude-opencode-session': 'ses_large',
             'x-claude-opencode-agent': 'build', 'x-claude-opencode-kind': 'primary' };

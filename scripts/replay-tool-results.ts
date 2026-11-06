@@ -1,10 +1,11 @@
 // Offline replay: read an existing SDK JSONL without printing or copying conversation bodies.
 import { readFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { boundToolResults, defaultToolResultBytes } from '../src/tool-results.js';
+import { boundToolResults } from '../src/tool-results.js';
 import type { ChatRequest } from '../src/protocol.js';
 
 const [file, directory] = process.argv.slice(2);
+const replayBudgetBytes = 16 * 1024;
 if (!file || !directory) throw new Error('Usage: tsx scripts/replay-tool-results.ts SDK.jsonl output-directory');
 const inherited: ChatRequest['messages'] = [];
 const added: ChatRequest['messages'] = [];
@@ -32,11 +33,11 @@ for (const line of (await readFile(file, 'utf8')).split('\n').filter(Boolean)) {
 await mkdir(directory, { recursive: true, mode: 0o700 });
 const summaries = [];
 for (const [sample, messages] of [['observed-new-results', added], ['inherited-results-hypothetical-first-insertion', inherited]] as const) {
-    const result = await boundToolResults(messages, directory, defaultToolResultBytes);
+    const result = await boundToolResults(messages, directory, replayBudgetBytes);
     summaries.push({ sample, count: messages.length, offloaded: result.offloaded, originalBytes: result.originalBytes,
         deliveredBytes: result.deliveredBytes, avoidedInlineBytes: result.originalBytes - result.deliveredBytes,
         storageErrors: result.storageErrors });
 }
-console.log(JSON.stringify({ mode: 'offline; no model inference', budgetBytes: defaultToolResultBytes, summaries,
+console.log(JSON.stringify({ mode: 'offline; no model inference', budgetBytes: replayBudgetBytes, summaries,
     limitations: ['Bytes are not model tokens or subscription quota savings.',
         'Inherited results were replayed hypothetically; existing history is not rewritten in production.'] }, null, 2));

@@ -11,7 +11,7 @@ import { continuation, rebuildReason, requestIdentity, SessionQueue, type Checkp
 import { buildFingerprint, measurePayload, recordMetric, type TurnMetric } from './metrics.js';
 import { toolResultLimit } from './tool-results.js';
 
-export type RunTurn = (request: ChatRequest, signal: AbortSignal, identity?: RequestIdentity) => AsyncIterable<TurnEvent>;
+export type RunTurn = (request: ChatRequest, signal: AbortSignal, identity?: RequestIdentity, hostRequest?: string, testRun?: boolean) => AsyncIterable<TurnEvent>;
 
 async function readRequest(request: IncomingMessage) {
     const chunks: Buffer[] = [];
@@ -36,20 +36,32 @@ export async function startServer(modelIDs: string[], run?: RunTurn, queryFn: ty
     const controllers = new Set<AbortController>();
     const queue = new SessionQueue();
     const sessions = new Map<string, { cwd: string; checkpoint: Checkpoint }>();
+    const quotaLocks = new Map<string, { until: number; error: ClaudeError }>();
     const build = await buildFingerprint();
-    async function* managedRun(payload: ChatRequest, signal: AbortSignal, identity?: RequestIdentity): AsyncGenerator<TurnEvent> {
+    async function* managedRun(payload: ChatRequest, signal: AbortSignal, identity?: RequestIdentity, hostRequest?: string, testRun = false): AsyncGenerator<TurnEvent> {
         const started = Date.now();
         const sizes = measurePayload(payload);
         const metric: TurnMetric = { at: new Date().toISOString(), build,
             session: identity ? createHash('sha256').update(identity.sessionID).digest('hex').slice(0, 16) : null,
-            model: payload.model, lane: identity?.kind ?? 'unknown', mode: 'bootstrap', reason: 'no-checkpoint',
+            model: payload.model, lane: testRun ? 'test' : identity?.kind ?? 'unknown', mode: 'bootstrap', reason: 'no-checkpoint',
             durationMs: 0, messageCount: payload.messages.length, toolCount: payload.tools.length,
-            sentBytes: sizes.history.bytes, outcome: 'error', payload: sizes };
+            sentBytes: sizes.history.bytes, outcome: 'error', payload: sizes, sdkStarted: false,
+            ...(hostRequest ? { hostRequest } : {}) };
         try {
             for await (const event of execute()) {
-                if (event.type === 'done') { metric.outcome = 'complete'; metric.usage = event.usage; }
+                if (event.type === 'done') {
+                    metric.outcome = 'complete';
+                    metric.usage = event.usage;
+                    quotaLocks.delete(payload.model);
+                }
                 yield event;
             }
+        } catch (error) {
+            if (error instanceof ClaudeError) metric.errorStatus = error.status;
+            if (error instanceof ClaudeError && error.quotaLocked && metric.mode !== 'blocked') {
+                quotaLocks.set(payload.model, { until: Date.now() + 60_000, error });
+            }
+            throw error;
         } finally {
             metric.durationMs = Date.now() - started;
             if (signal.aborted && metric.outcome !== 'complete') metric.outcome = 'cancelled';
@@ -57,8 +69,16 @@ export async function startServer(modelIDs: string[], run?: RunTurn, queryFn: ty
         }
         async function* execute(): AsyncGenerator<TurnEvent> {
         if (!identity || identity.kind !== 'primary') {
+            const lock = quotaLocks.get(payload.model);
+            if (lock && lock.until > Date.now()) {
+                metric.mode = 'blocked';
+                metric.reason = 'quota-cooldown';
+                metric.sentBytes = 0;
+                throw lock.error;
+            }
+            quotaLocks.delete(payload.model);
             metric.reason = identity ? 'auxiliary-lane' : 'missing-identity';
-            yield* runTurn(payload, signal, queryFn);
+            yield* runTurn(payload, signal, queryFn, undefined, () => { metric.sdkStarted = true; });
             return;
         }
         const key = JSON.stringify([identity.sessionID, identity.agent]);
@@ -95,7 +115,7 @@ export async function startServer(modelIDs: string[], run?: RunTurn, queryFn: ty
                     sessions.set(key, { cwd, checkpoint });
                     saved = true;
                 },
-            });
+            }, () => { metric.sdkStarted = true; });
         } finally {
             if (!saved) await rm(cwd, { recursive: true, force: true });
         }
@@ -153,7 +173,11 @@ export async function startServer(modelIDs: string[], run?: RunTurn, queryFn: ty
         }
         try {
             const identity = requestIdentity(request.headers);
-            for await (const event of queue.run(identity, controller.signal, () => (run ?? managedRun)(payload, controller.signal, identity))) {
+            const hostID = request.headers['x-opencode-session'];
+            const hostRequest = typeof hostID === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(hostID)
+                ? createHash('sha256').update(hostID).digest('hex').slice(0, 16) : undefined;
+            const testRun = request.headers['x-claude-opencode-test'] === 'manual-bridge';
+            for await (const event of queue.run(identity, controller.signal, () => (run ?? managedRun)(payload, controller.signal, identity, hostRequest, testRun))) {
                 if (controller.signal.aborted) break;
                 if (event.type === 'text') {
                     text += event.text;

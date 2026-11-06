@@ -13,13 +13,15 @@ import { boundToolResults, toolResultLimit } from './tool-results.js';
 
 export class ClaudeError extends Error {
     readonly status: number;
+    readonly quotaLocked: boolean;
 
     constructor(kind: string, detail: string, statusOverride?: number) {
         super('Claude SDK: ' + kind + (detail ? ': ' + detail : ''));
         const status = Number(detail.match(/API Error: (\d{3})\b/)?.[1]);
         // A subscription quota lock is not a transient upstream failure: OpenCode retries 5xx responses.
-        const quotaLocked = kind === 'rate_limit' && /(?:hit your .*limit|out of extra usage)/i.test(detail);
-        this.status = statusOverride ?? (kind === 'authentication_failed' ? 401 : quotaLocked ? 400 : status >= 400 && status < 600 ? status : 502);
+        this.quotaLocked = kind === 'rate_limit' &&
+            /(?:hit your (?:5-hour|weekly|7-day) limit|hit your .*limit.*\bresets\b|out of extra usage)/i.test(detail);
+        this.status = statusOverride ?? (kind === 'authentication_failed' ? 401 : this.quotaLocked ? 400 : status >= 400 && status < 600 ? status : 502);
     }
 }
 
@@ -78,7 +80,8 @@ export type ManagedTurn = {
     resultsMeasured?: (result: { offloaded: number; originalBytes: number; deliveredBytes: number; storageErrors: number; retrievals: number; sentBytes: number; limitBytes: number }) => void;
 };
 
-export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryFn = query, managed?: ManagedTurn): AsyncGenerator<TurnEvent> {
+export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryFn = query, managed?: ManagedTurn,
+    onSDKStart?: () => void): AsyncGenerator<TurnEvent> {
     const transcript = conversation(request);
     const { names, tools } = toolCatalog(request);
     const cwd = managed?.cwd ?? await mkdtemp(join(tmpdir(), 'opencode-claude-'));
@@ -115,6 +118,7 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
             name: [...names.entries()].find(([, original]) => original === call.function.name)?.[0].replace(/^mcp__opencode__/, ''),
             content: delivered!.messages.find((message) => message.tool_call_id === call.id)!.content,
         })) }), { mode: 0o600 });
+        onSDKStart?.();
         active = queryFn({
             prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
                 if (managed?.resume?.kind === 'tools') { await promptReleased; return; }

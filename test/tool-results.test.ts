@@ -60,7 +60,7 @@ test('result budget is explicit, disableable and validated', () => {
     const previous = process.env.OPENCODE_CLAUDE_TOOL_RESULT_MAX_BYTES;
     try {
         delete process.env.OPENCODE_CLAUDE_TOOL_RESULT_MAX_BYTES;
-        assert.equal(toolResultLimit(), 16384);
+        assert.equal(toolResultLimit(), 0);
         assert.equal(toolResultLimit(0), 0);
         assert.equal(toolResultLimit(2048), 2048);
         for (const value of [null, {}, true, -1, 1.5, Infinity]) assert.throws(() => toolResultLimit(value), /must be/);
