@@ -214,6 +214,30 @@ test('Claude quota rejection preserves HTTP 400 to avoid server-error retries', 
     }
 });
 
+test('SDK subscription locks without HTTP status are non-retryable in JSON and SSE', async () => {
+    assert.equal(new ClaudeError('rate_limit', 'API Error: 429 Too many requests').status, 429);
+    assert.equal(new ClaudeError('unknown', 'network failed').status, 502);
+    for (const stream of [false, true]) {
+        const server = await startServer(['test-model'], async function* () {
+            if (stream) yield { type: 'text', text: 'started' };
+            throw new ClaudeError('rate_limit', "You've hit your 5-hour limit · resets 10:20am (Asia/Tokyo)");
+        });
+        try {
+            const response = await fetch(server.baseURL + '/chat/completions', {
+                method: 'POST', headers: { authorization: 'Bearer ' + server.token }, body: JSON.stringify({ ...payload, stream }),
+            });
+            if (stream) {
+                const events = (await response.text()).split('\n\n').filter((line) => line.startsWith('data: '))
+                    .map((line) => JSON.parse(line.slice(6)));
+                assert.equal(events.at(-1).error.code, 400);
+            } else {
+                assert.equal(response.status, 400);
+                assert.match(await response.text(), /5-hour limit/);
+            }
+        } finally { await server.close(); }
+    }
+});
+
 test('streaming Claude errors retain their HTTP status in the SSE error', async () => {
     const server = await startServer(['test-model'], async function* () {
         yield { type: 'text', text: 'started' };

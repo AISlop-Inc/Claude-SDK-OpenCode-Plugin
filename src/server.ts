@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { conversation, requestSchema, type ChatRequest, type TurnEvent, type ToolCall } from './protocol.js';
 import { ClaudeError, runTurn } from './agent.js';
-import { continuation, requestIdentity, SessionQueue, type Checkpoint, type RequestIdentity } from './continuation.js';
+import { continuation, rebuildReason, requestIdentity, SessionQueue, type Checkpoint, type RequestIdentity } from './continuation.js';
 import { buildFingerprint, recordMetric, type TurnMetric } from './metrics.js';
 
 export type RunTurn = (request: ChatRequest, signal: AbortSignal, identity?: RequestIdentity) => AsyncIterable<TurnEvent>;
@@ -62,7 +62,7 @@ export async function startServer(modelIDs: string[], run?: RunTurn, queryFn: ty
         const previous = sessions.get(key);
         sessions.delete(key);
         const result = previous && continuation(previous.checkpoint, identity.sessionID, payload);
-        if (previous && !result) metric.reason = 'history-or-settings-changed';
+        if (previous && !result) metric.reason = rebuildReason(previous.checkpoint, payload);
         if (previous && !result) await rm(previous.cwd, { recursive: true, force: true });
         if (!result && sessions.size >= 64) {
             // Evict an inactive checkpoint rather than permanently disabling continuity at capacity.

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { deferredResult, requestIdentity, SessionQueue, type Checkpoint } from '../src/continuation.js';
+import { deferredResult, fingerprint, rebuildReason, requestIdentity, SessionQueue, type Checkpoint } from '../src/continuation.js';
 import { requestSchema } from '../src/protocol.js';
 
 const request = requestSchema.parse({ model: 'test', messages: [{ role: 'user', content: 'read' }],
@@ -11,6 +11,20 @@ const assistant = { role: 'assistant' as const, content: null, tool_calls: [
 const checkpoint: Checkpoint = { sessionID: 'session-a', sdkSessionID: 'sdk-a', request, assistant };
 const result = { role: 'tool' as const, tool_call_id: 'call-1', content: 'contents' };
 const next = requestSchema.parse({ ...request, messages: [...request.messages, assistant, result] });
+
+test('object key ordering does not rebuild a conversation, but array and instruction changes do', () => {
+    const reordered = { ...next, tools: [{ function: { parameters: { type: 'object' }, name: 'read' }, type: 'function' as const }] };
+    const original = { ...checkpoint, request: { ...request, tools: [{ type: 'function' as const,
+        function: { name: 'read', parameters: { type: 'object' } } }] } };
+    assert.deepEqual(deferredResult(original, 'session-a', reordered), result);
+    assert.equal(fingerprint({ a: { x: 1, y: 2 }, b: 3 }), fingerprint({ b: 3, a: { y: 2, x: 1 } }));
+    assert.notEqual(fingerprint([1, 2]), fingerprint([2, 1]));
+    assert.equal(rebuildReason(checkpoint, { ...next, model: 'other' }), 'model-changed');
+    assert.equal(rebuildReason(checkpoint, { ...next, reasoning_effort: 'low' }), 'settings-changed');
+    assert.equal(rebuildReason(checkpoint, request), 'unsupported-append');
+    assert.equal(rebuildReason(checkpoint, { ...next, messages: [{ role: 'system', content: 'new instructions' }, ...next.messages] }), 'history-changed');
+    assert.equal(deferredResult(checkpoint, 'session-a', { ...next, messages: [{ role: 'system', content: 'new instructions' }, ...next.messages] }), undefined);
+});
 
 test('identity requires a bounded session, agent and recognized lane', () => {
     const headers = { 'x-claude-opencode-session': 'ses_123', 'x-claude-opencode-agent': 'build', 'x-claude-opencode-kind': 'primary' };

@@ -143,6 +143,10 @@ python3 scripts/daily-feedback.py --node /absolute/path/to/node \
 `--collect-only` を外すと、使用量照会と集計に続いてOpenCodeの独立プロセスで保守を実行します。
 `scripts/feedback-prompt.txt` に沿って原因確認・修正・テスト・PR・通常のマージ・ローカル更新を行い、問題がなければ確認結果だけを残します。
 同時実行はファイルロックで防ぎ、保守は1時間でタイムアウトします。
+再構築理由は `model-changed`・`settings-changed`・`history-changed`・`assistant-changed`・`unsupported-append` に分けます。
+長い会話へのモデル切り替えに伴う初回投入は正常な再構築として扱い、不要な再投入とは区別してください。
+JSONオブジェクトのキー順序だけの差は継続を妨げず、MCPのスキーマもキー順序を安定させます。
+指示や配列の順序、設定値の変更は無視しません。
 スナップショット、前回への参照、保守ログ、終了状態は同じ保存先に残ります。
 使用量照会は推論を送らず、保守には指定した非Claudeモデルを使用してください。
 macOSではLaunchAgentの `StartCalendarInterval` にHour=9、Minute=0を指定してこのコマンドを登録します（ホストの時刻帯が日本時間の場合）。
@@ -152,6 +156,8 @@ macOSではLaunchAgentの `StartCalendarInterval` にHour=9、Minute=0を指定�
 ## 追加利用エラーの切り分け
 
 `You're out of extra usage` は、通常のサブスク枠を使い切ったことを必ずしも意味しません。
+SDKがHTTPステータスなしで返す `rate_limit` のうち、枠到達が明記されたエラーはHTTP 400（ストリーミング中はエラーコード400）として返し、OpenCodeによる5xx再試行を防ぎます。
+通常のHTTP 429や一時的な通信障害は、この扱いには変更しません。
 認証と現在の枠は別々に確認します。
 
 ```sh

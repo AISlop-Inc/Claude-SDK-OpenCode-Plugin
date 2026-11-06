@@ -8,7 +8,7 @@ import { query, type Options, type SDKUserMessage } from '@anthropic-ai/claude-a
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { conversation, type ChatRequest, type TurnEvent } from './protocol.js';
-import type { Checkpoint } from './continuation.js';
+import { stableJSON, type Checkpoint } from './continuation.js';
 
 export class ClaudeError extends Error {
     readonly status: number;
@@ -16,7 +16,9 @@ export class ClaudeError extends Error {
     constructor(kind: string, detail: string, statusOverride?: number) {
         super('Claude SDK: ' + kind + (detail ? ': ' + detail : ''));
         const status = Number(detail.match(/API Error: (\d{3})\b/)?.[1]);
-        this.status = statusOverride ?? (kind === 'authentication_failed' ? 401 : status >= 400 && status < 600 ? status : 502);
+        // A subscription quota lock is not a transient upstream failure: OpenCode retries 5xx responses.
+        const quotaLocked = kind === 'rate_limit' && /(?:hit your .*limit|out of extra usage)/i.test(detail);
+        this.status = statusOverride ?? (kind === 'authentication_failed' ? 401 : quotaLocked ? 400 : status >= 400 && status < 600 ? status : 502);
     }
 }
 
@@ -57,7 +59,7 @@ export function toolCatalog(request: ChatRequest) {
         if ([...names.values()].includes(definition.name)) throw new Error('Duplicate tool: ' + definition.name);
         names.set('mcp__opencode__' + alias, definition.name);
         return { name: alias, description: definition.name + ': ' + (definition.description ?? ''),
-            inputSchema: definition.parameters ?? { type: 'object', properties: {} } };
+            inputSchema: JSON.parse(stableJSON(definition.parameters ?? { type: 'object', properties: {} })) };
     });
     return { names, tools };
 }
