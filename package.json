@@ -1,16 +1,23 @@
 {
-  "name": "claude-agent-opencode",
+  "name": "@aislop-inc/claude-agent-opencode",
   "version": "0.1.0",
   "description": "Use Claude Agent SDK as an OpenCode V2 model provider",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/AISlop-Inc/Claude-SDK-OpenCode-Plugin.git"
+    "url": "git+https://github.com/AISlop-Inc/Claude-SDK-OpenCode-Plugin.git"
   },
   "type": "module",
-  "exports": { ".": "./dist/index.js" },
-  "files": ["dist", "README.md"],
-  "engines": { "node": ">=22.18.0" },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "scripts": {
     "build": "tsc",
     "prepare": "npm run build",
@@ -31,5 +38,8 @@
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0",
     "tsx": "^4.20.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

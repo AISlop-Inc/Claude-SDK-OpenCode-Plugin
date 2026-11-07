@@ -1,0 +1,66 @@
+name: Publish npm package
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Validate and pack without publishing
+        type: boolean
+        default: true
+
+permissions: {}
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'AISlop-Inc/Claude-SDK-OpenCode-Plugin' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm install --global npm@11.21.2 --registry=https://registry.npmjs.org
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      - name: Check package identity and artifacts
+        run: node scripts/check-package.cjs
+      - name: Pack once
+        id: pack
+        run: |
+          dir="$(mktemp -d)"
+          npm pack --ignore-scripts --json --pack-destination "$dir" > "$RUNNER_TEMP/pack.json"
+          file="$(node -p "require(process.env.RUNNER_TEMP + '/pack.json')[0].filename")"
+          echo "tarball=$dir/$file" >> "$GITHUB_OUTPUT"
+          tar -tzf "$dir/$file"
+      - name: Configure optional bootstrap token
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$RUNNER_TEMP/publish.npmrc"
+            echo "NPM_CONFIG_USERCONFIG=$RUNNER_TEMP/publish.npmrc" >> "$GITHUB_ENV"
+          fi
+      - name: Publish (OIDC, with optional token fallback)
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          args=(publish "$TARBALL" --access public --registry=https://registry.npmjs.org)
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          npm "${args[@]}"

@@ -1,3 +1,6 @@
+> AISlop-Inc npm package: `@aislop-inc/claude-agent-opencode`.
+> Manual release instructions: [npm publishing](docs/NPM-PUBLISHING.md).
+
 # claude-agent-opencode
 
 Claude Agent SDK を OpenCode V2 のモデルプロバイダとして使うプラグインです。
@@ -269,3 +272,13 @@ OpenCode の組み込み指示を除外する一方、プロジェクトやユ�
 ## ライセンス
 
 [MIT](./LICENSE) — Copyright (c) 2026 AISlop-Inc
+
+## npm installation
+
+After the first npm publication, add this entry to the existing OpenCode plugins array:
+
+```json
+{"plugins": ["@aislop-inc/claude-agent-opencode@latest"]}
+```
+
+Do not add it alongside a local copy of the same plugin.
