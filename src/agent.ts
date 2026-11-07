@@ -26,8 +26,9 @@ export class ClaudeError extends Error {
 }
 
 export function sdkOptions(cwd: string): Options {
-    return { cwd, tools: [], settingSources: [], strictMcpConfig: true, persistSession: false,
-        env: { ...process.env, ENABLE_TOOL_SEARCH: 'false' } };
+    return { cwd, tools: [], settingSources: [], strictMcpConfig: true, persistSession: false, verbatimPrompts: true,
+        env: { ...process.env, ENABLE_TOOL_SEARCH: 'false',
+            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1' } };
 }
 
 function installedNodes(directory: string): string[] {
@@ -97,6 +98,17 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
     const promptReleased = new Promise<void>((resolve) => { releasePrompt = resolve; });
     try {
         const options = sdkOptions(cwd);
+        if (tools.length) {
+            let extra: unknown;
+            try { extra = JSON.parse(options.env!.CLAUDE_CODE_EXTRA_BODY ?? '{}'); }
+            catch { throw new ClaudeError('invalid_configuration', 'CLAUDE_CODE_EXTRA_BODY must be a JSON object', 400); }
+            if (!extra || typeof extra !== 'object' || Array.isArray(extra)) {
+                throw new ClaudeError('invalid_configuration', 'CLAUDE_CODE_EXTRA_BODY must be a JSON object', 400);
+            }
+            // SDK defer only supports one pending tool; parallel native calls otherwise force a cold rebuild.
+            options.env!.CLAUDE_CODE_EXTRA_BODY = JSON.stringify({ ...extra,
+                tool_choice: { type: 'auto', disable_parallel_tool_use: true } });
+        }
         const maxTokens = request.max_completion_tokens ?? request.max_tokens;
         if (maxTokens) options.env!.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxTokens);
         const effort = request.reasoning_effort;
@@ -145,7 +157,6 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
         let streamedText = false;
         let calls = 0;
         let stopReason: string | null = null;
-        let completed = false;
         let text = '';
         const toolCalls: NonNullable<ChatRequest['messages'][number]['tool_calls']> = [];
         for await (const message of active) {
@@ -193,14 +204,14 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
                 }
                 const cached = usage.cache_read_input_tokens ?? 0;
                 const input = usage.input_tokens + (usage.cache_creation_input_tokens ?? 0) + cached;
-                completed = true;
                 yield { type: 'done', reason: calls ? 'tool_calls' : stopReason === 'max_tokens' ? 'length' : 'stop',
                     usage: { prompt_tokens: input, completion_tokens: usage.output_tokens,
                         total_tokens: input + usage.output_tokens, prompt_tokens_details: { cached_tokens: cached,
                             cache_write_tokens: usage.cache_creation_input_tokens ?? 0 } } };
+                return;
             }
         }
-        if (!completed) throw new Error('Claude SDK ended without a result');
+        throw new Error('Claude SDK ended without a result');
     } finally {
         signal.removeEventListener('abort', abort);
         releasePrompt();

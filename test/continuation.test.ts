@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { deferredResult, fingerprint, rebuildReason, requestIdentity, SessionQueue, type Checkpoint } from '../src/continuation.js';
+import { continuation, deferredResult, fingerprint, rebuildReason, requestIdentity, SessionQueue, type Checkpoint } from '../src/continuation.js';
 import { requestSchema } from '../src/protocol.js';
 
 const request = requestSchema.parse({ model: 'test', messages: [{ role: 'user', content: 'read' }],
@@ -11,6 +11,15 @@ const assistant = { role: 'assistant' as const, content: null, tool_calls: [
 const checkpoint: Checkpoint = { sessionID: 'session-a', sdkSessionID: 'sdk-a', request, assistant };
 const result = { role: 'tool' as const, tool_call_id: 'call-1', content: 'contents' };
 const next = requestSchema.parse({ ...request, messages: [...request.messages, assistant, result] });
+
+test('multiple appended user frames resume without discarding any frame or accepting system changes', () => {
+    const completed = { ...checkpoint, assistant: { role: 'assistant' as const, content: 'done' } };
+    const appended = [{ role: 'user' as const, content: 'new question' }, { role: 'user' as const, content: 'steering' }];
+    const messages = [...request.messages, completed.assistant, ...appended];
+    assert.deepEqual(continuation(completed, 'session-a', { ...request, messages }), { kind: 'user', messages: appended });
+    assert.equal(continuation(completed, 'session-a', { ...request,
+        messages: [...request.messages, completed.assistant, appended[0], { role: 'system', content: 'changed rule' }] }), undefined);
+});
 
 test('object key ordering does not rebuild a conversation, but array and instruction changes do', () => {
     const reordered = { ...next, tools: [{ function: { parameters: { type: 'object' }, name: 'read' }, type: 'function' as const }] };

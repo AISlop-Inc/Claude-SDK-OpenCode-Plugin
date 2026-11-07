@@ -68,6 +68,7 @@ opencode run -m 'claude-agent-sdk/claude-sonnet-5-5#high' 'このコードを確
 - ツールは MCP として SDK に提示し、`PreToolUse` の `defer` で OpenCode に返却
 - SDK の組み込みツール、プロジェクト設定、外部 MCP の自動読み込みを無効化
 - OpenCode の組み込み指示は除外し、`AGENTS.md` 等の指示、エージェント指示、会話とツール履歴は転送する
+- 組み込みのモデル自己紹介・persistent task/worktree案内も除外し、除外済みの指示をmetadataから再混入させない
 - ツール実行と承認は OpenCode が担当
 - キャンセル時に SDK を停止し、プラグイン解除時に HTTP サーバーを終了
 - `127.0.0.1` の空きポートと、起動ごとのランダムな Bearer トークンを使用
@@ -79,10 +80,16 @@ opencode run -m 'claude-agent-sdk/claude-sonnet-5-5#high' 'このコードを確
 
 - OpenCode の指示元メタデータは実験的 API です。OpenCode のバージョンにより分類が変わる可能性があります。
 - 同一セッション内で履歴と設定が一致する場合、通常回答後も SDK セッションを再開し、新しいユーザー発言またはツール結果だけを引き渡します。
+  完了回答に複数のユーザー発言が続いた場合も、すべてを保持したまま差分で渡します。
   複数のツール結果は呼び出しIDで照合し、同じ結果の二重返却を拒否します。
   ただしSDKの[defer契約](https://code.claude.com/docs/en/hooks#defer-a-tool-call-for-later)は1モデルターンの単一呼び出しが対象です。
   複数結果のID照合テストは、SDKによる並列呼び出し保留の実接続保証ではありません。
+  この制約に合わせ、ツールがある要求は公式APIの`tool_choice: {type: "auto", disable_parallel_tool_use: true}`に設定し、1応答の直接ツール呼び出しを最大1件にします。
+  `CLAUDE_CODE_EXTRA_BODY`経由で設定し、他の追加フィールドは保持しますが、`tool_choice`はブリッジが管理します。
+  OpenCode側のexecute等の1呼び出し内部で行う並列処理は、この制約では禁止しません。
   履歴編集・圧縮・分岐・設定変更、画像付きツール結果など、条件に合わない場合は会話全体を JSON の履歴として再送します。
+  保留ツールの結果と新しいユーザー発言が同時に追加された場合も、現状は再構築します。
+  追加の発言を捨てて継続扱いにはしません。
   これはネイティブの assistant / tool 履歴と同一の表現ではありません。
 - SDK セッションの再開にはディスクへの保存が必要です。
   Claude Code は会話内容を通常の SDK セッション保存先（`~/.claude/projects/` または設定された保存先）に書き込みます。
@@ -102,8 +109,11 @@ opencode run -m 'claude-agent-sdk/claude-sonnet-5-5#high' 'このコードを確
 
 ## 開発・検証
 
-2026-11-06 に型チェック、ビルド、自動テストを確認しました。
+2026-11-07 に型チェック、ビルド、自動テストを確認しました。
 組み込み指示とプロジェクト指示を分け、`AGENTS.md` 等を保持するようにしています。
+実SDK/Claude Code子プロセスとローカルの偽Messages APIを接続するオフライン試験も含みます。
+実アカウントの認証情報を子へ渡さず、通常回答単独と、単一ツール保留→結果再開→複数ユーザー発言の再開を検証します。
+このfixtureでのHTTP要求数・指示の除外・ユーザー指示の保持は、実サービスの使用枠削減率の測定ではありません。
 
 ```sh
 npm run typecheck
@@ -167,6 +177,14 @@ SDKのresumeもキャッシュを利用するため、プロセスの常駐化�
 キャッシュ読み取りも入力なので、送信バイト数やAPI料金の割引率からサブスク枠の削減率は算出しません。
 ツール結果は履歴へ入る前に必要な範囲へ絞り、保存済みの履歴は毎ターン書き換えません。
 長い会話の早期圧縮やモデル・推論強度の自動変更は、この最適化では行いません。
+
+Hermesの[claude-subscription-directsdk（参照版）](https://github.com/NousResearch/hermes-official-plugins/tree/13b2c1c9c8204bf333df240b2aacf98c3e6250b7/claude-subscription-directsdk)を参考に、ホストが指示・ツール・会話を所有する方針にしています。
+SDKの`verbatimPrompts: true`を使い、アプリが組み立てた本文を`@path`展開やスラッシュコマンドとして再解釈させません。
+Claude側の自動メモリと`CLAUDE.md`自動読込も無効にします。
+OpenCodeが明示的に渡すユーザー・プロジェクト指示は保持し、組織の管理ポリシーを無効化するものではありません。
+`verbatimPrompts`はツール間の全添付処理を止めるものではありません。
+Hermesのネイティブ会話再生、HTTP中継、署名付き思考の転送は移植しておらず、bootstrapのJSON履歴表現は引き続き残ります。
+SDK1回・1ターンが常に上流HTTP1回とは扱わず、利用者名の偽装や第三者の使用枠倍率を削減保証には使いません。
 
 ツール結果プレビューは既定で無効です。
 `options.toolResultMaxBytes=16384`または`OPENCODE_CLAUDE_TOOL_RESULT_MAX_BYTES=16384`で明示的に有効化した場合、新規ツール結果が16KiBを超え、readツールが利用できるときだけ全文をアクセス制限付き一時ファイルへ保存し、SDKには上限内の先頭・末尾プレビューと取得先を渡します。

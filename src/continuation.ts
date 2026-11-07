@@ -83,7 +83,7 @@ export function continuation(checkpoint: Checkpoint, sessionID: string, request:
     const appended = messages.slice(before.length + 1);
     const calls = checkpoint.assistant.tool_calls ?? [];
     if (!calls.length) {
-        if (appended.length === 1 && appended[0].role === 'user') return { kind: 'user', messages: appended };
+        if (appended.length && appended.every((message) => message.role === 'user')) return { kind: 'user', messages: appended };
         return;
     }
     const ids = new Set(calls.map((call) => call.id));
