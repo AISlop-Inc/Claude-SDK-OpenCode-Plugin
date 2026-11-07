@@ -1,34 +1,31 @@
 # npm publishing
 
-Package: `@aislop-inc/claude-agent-opencode` (public).
+Trusted Publishing is configured for this package. No NPM_TOKEN secret is needed.
 
-## First publish
+## Release
 
-1. Ensure npm organization `aislop-inc` exists and your account can publish to it.
-2. Add a granular npm write token with bypass-2FA as the repository Actions secret `NPM_TOKEN`. Never commit it.
-3. Open Actions → **Publish npm package** → **Run workflow**, branch `main`.
-4. Keep `dry-run` checked to test the artifact; uncheck it to publish.
+1. Commit a new package.json version (and package-lock.json if present) to main.
+2. Open Actions → **Publish npm package** → **Run workflow**, branch main.
+3. Keep dry-run checked to validate without publishing; uncheck it to publish.
 
-## Trusted Publishing
+Pushes and tags never publish. Published npm versions are immutable.
+Dry-run does not verify OIDC authorization; use a new version for a real publish.
 
-After the first publish, configure the package's npm Trusted Publisher:
+## Trusted Publisher settings on npm
 
 - Provider: GitHub Actions
-- Organization: `AISlop-Inc` (case-sensitive)
-- Repository: `Claude-SDK-OpenCode-Plugin`
-- Workflow filename: `publish-npm.yml`
-- Environment: `npm-publish`
-- Allow `npm publish` (not only staged publishing).
+- Organization: AISlop-Inc (case-sensitive)
+- Repository: Claude-SDK-OpenCode-Plugin
+- Workflow filename: publish-npm.yml
+- Environment: npm-publish
+- Allowed action: npm publish
 
-Remove `NPM_TOKEN` after OIDC works.
-The workflow uses GitHub-hosted runners, Node 24 and npm >=11.5.1.
-Only manual dispatch on main publishes; pushes and tags never publish.
+The workflow uses GitHub-hosted runners, Node 24, npm >=11.5.1 and id-token: write.
+After verifying OIDC publication, set npm Publishing access to
+**Require two-factor authentication and disallow tokens**.
 
-## Subsequent releases
-
-Commit a new `package.json` version (and package-lock.json if present), push to main, then run the workflow.
-Published npm versions are immutable and cannot be reused.
-The workflow does not change source, versions, tags or GitHub releases.
-Dry-run does not verify npm write permissions or OIDC trust.
+For a new package, publish the first version locally using npm login and 2FA,
+then register its Trusted Publisher. Do not store a bootstrap token in GitHub.
+New trust configurations must complete a publish within 2 days.
 
 See [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers).

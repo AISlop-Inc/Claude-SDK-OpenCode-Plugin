@@ -1,6 +1,6 @@
 {
   "name": "@aislop-inc/claude-agent-opencode",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Use Claude Agent SDK as an OpenCode V2 model provider",
   "license": "MIT",
   "repository": {

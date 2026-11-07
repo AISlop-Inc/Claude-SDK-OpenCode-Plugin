@@ -48,15 +48,7 @@ jobs:
           file="$(node -p "require(process.env.RUNNER_TEMP + '/pack.json')[0].filename")"
           echo "tarball=$dir/$file" >> "$GITHUB_OUTPUT"
           tar -tzf "$dir/$file"
-      - name: Configure optional bootstrap token
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -n "$NPM_TOKEN" ]; then
-            printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$RUNNER_TEMP/publish.npmrc"
-            echo "NPM_CONFIG_USERCONFIG=$RUNNER_TEMP/publish.npmrc" >> "$GITHUB_ENV"
-          fi
-      - name: Publish (OIDC, with optional token fallback)
+      - name: Publish with Trusted Publishing (OIDC)
         env:
           TARBALL: ${{ steps.pack.outputs.tarball }}
           DRY_RUN: ${{ inputs.dry-run }}
