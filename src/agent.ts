@@ -26,9 +26,8 @@ export class ClaudeError extends Error {
 }
 
 export function sdkOptions(cwd: string): Options {
-    return { cwd, tools: [], settingSources: [], strictMcpConfig: true, persistSession: false, verbatimPrompts: true,
-        env: { ...process.env, ENABLE_TOOL_SEARCH: 'false',
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1' } };
+    return { cwd, tools: [], settingSources: [], strictMcpConfig: true, persistSession: false,
+        env: { ...process.env, ENABLE_TOOL_SEARCH: 'false' } };
 }
 
 function installedNodes(directory: string): string[] {
@@ -98,17 +97,6 @@ export async function* runTurn(request: ChatRequest, signal: AbortSignal, queryF
     const promptReleased = new Promise<void>((resolve) => { releasePrompt = resolve; });
     try {
         const options = sdkOptions(cwd);
-        if (tools.length) {
-            let extra: unknown;
-            try { extra = JSON.parse(options.env!.CLAUDE_CODE_EXTRA_BODY ?? '{}'); }
-            catch { throw new ClaudeError('invalid_configuration', 'CLAUDE_CODE_EXTRA_BODY must be a JSON object', 400); }
-            if (!extra || typeof extra !== 'object' || Array.isArray(extra)) {
-                throw new ClaudeError('invalid_configuration', 'CLAUDE_CODE_EXTRA_BODY must be a JSON object', 400);
-            }
-            // SDK defer only supports one pending tool; parallel native calls otherwise force a cold rebuild.
-            options.env!.CLAUDE_CODE_EXTRA_BODY = JSON.stringify({ ...extra,
-                tool_choice: { type: 'auto', disable_parallel_tool_use: true } });
-        }
         const maxTokens = request.max_completion_tokens ?? request.max_tokens;
         if (maxTokens) options.env!.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxTokens);
         const effort = request.reasoning_effort;
