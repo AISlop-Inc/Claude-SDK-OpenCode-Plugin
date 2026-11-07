@@ -43,7 +43,7 @@ export function measurePayload(request: ChatRequest, appended?: ChatRequest['mes
 }
 
 export async function buildFingerprint(): Promise<string> {
-    const files = ['agent.js', 'server.js', 'continuation.js', 'protocol.js', 'mcp-stdio.js', 'metrics.js', 'tool-results.js', 'instructions.js', 'index.js'];
+    const files = ['agent.js', 'server.js', 'continuation.js', 'protocol.js', 'mcp-stdio.js', 'metrics.js', 'tool-results.js'];
     const hash = createHash('sha256');
     for (const file of files) hash.update(await readFile(new URL(import.meta.url.endsWith('.ts') ? file.replace('.js', '.ts') : file, import.meta.url)));
     return hash.digest('hex').slice(0, 16);

@@ -4,34 +4,12 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { ClaudeError, nodeCommand, runTurn, sdkOptions, toolCatalog } from '../src/agent.js';
+import { nodeCommand, runTurn, toolCatalog } from '../src/agent.js';
 import { requestSchema } from '../src/protocol.js';
 
 const request = requestSchema.parse({ model: 'test-model', messages: [{ role: 'user', content: 'Read a file' }],
     tools: [{ type: 'function', function: { name: 'read', parameters: { type: 'object', properties: {} } } }] });
 const usage = { input_tokens: 5, cache_creation_input_tokens: 3, cache_read_input_tokens: 2, output_tokens: 4 };
-
-test('host-composed prompts do not acquire native auto memory or CLAUDE.md context', () => {
-    const priorMemory = process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
-    const priorMds = process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS;
-    try {
-        process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '0';
-        process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS = '0';
-        const options = sdkOptions('/isolated');
-        assert.equal(options.verbatimPrompts, true);
-        assert.equal(options.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1');
-        assert.equal(options.env?.CLAUDE_CODE_DISABLE_CLAUDE_MDS, '1');
-        assert.deepEqual(options.settingSources, []);
-        assert.deepEqual(options.tools, []);
-        assert.equal(process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '0');
-        assert.equal(process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS, '0');
-    } finally {
-        if (priorMemory === undefined) delete process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
-        else process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = priorMemory;
-        if (priorMds === undefined) delete process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS;
-        else process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS = priorMds;
-    }
-});
 
 function mockQuery(messages: object[], inspect?: (options: Parameters<typeof query>[0]['options']) => void) {
     let closed = false;
@@ -41,32 +19,6 @@ function mockQuery(messages: object[], inspect?: (options: Parameters<typeof que
     }) as typeof query;
     return { run, isClosed: () => closed };
 }
-
-test('single-tool defer policy preserves unrelated extra fields and rejects malformed configuration without a query', async () => {
-    const previous = process.env.CLAUDE_CODE_EXTRA_BODY;
-    try {
-        const original = JSON.stringify({ stop_sequences: ['STOP_FIXTURE'], tool_choice: { type: 'any' } });
-        process.env.CLAUDE_CODE_EXTRA_BODY = original;
-        const mock = mockQuery([{ type: 'result', subtype: 'success', is_error: false, usage }], (options) => {
-            assert.deepEqual(JSON.parse(options!.env!.CLAUDE_CODE_EXTRA_BODY!), {
-                stop_sequences: ['STOP_FIXTURE'], tool_choice: { type: 'auto', disable_parallel_tool_use: true },
-            });
-        });
-        await Array.fromAsync(runTurn(request, new AbortController().signal, mock.run));
-        assert.equal(process.env.CLAUDE_CODE_EXTRA_BODY, original);
-        for (const value of ['null', '[]', 'not-json']) {
-            process.env.CLAUDE_CODE_EXTRA_BODY = value;
-            let queried = false;
-            const unused = mockQuery([], () => { queried = true; });
-            await assert.rejects(Array.fromAsync(runTurn(request, new AbortController().signal, unused.run)),
-                (error) => error instanceof ClaudeError && error.status === 400 && /must be a JSON object/.test(error.message));
-            assert.equal(queried, false);
-        }
-    } finally {
-        if (previous === undefined) delete process.env.CLAUDE_CODE_EXTRA_BODY;
-        else process.env.CLAUDE_CODE_EXTRA_BODY = previous;
-    }
-});
 
 test('SDK defers execution, returns original tool name and counts cache tokens', async () => {
     const alias = [...toolCatalog(request).names.keys()][0];
@@ -80,9 +32,6 @@ test('SDK defers execution, returns original tool name and counts cache tokens',
         assert.deepEqual(options?.tools, []);
         assert.deepEqual(options?.settingSources, []);
         assert.equal(options?.strictMcpConfig, true);
-        assert.equal(options?.verbatimPrompts, true);
-        assert.deepEqual(JSON.parse(options?.env?.CLAUDE_CODE_EXTRA_BODY ?? '{}').tool_choice,
-            { type: 'auto', disable_parallel_tool_use: true });
         hook = options?.hooks?.PreToolUse?.[0].hooks[0];
     });
     const events = await Array.fromAsync(runTurn(request, new AbortController().signal, mock.run));

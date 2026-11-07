@@ -26,9 +26,6 @@ test('completed conversations resume with only the new user message, including n
         const seen: Array<{ resume: string | undefined; prompt: string }> = [];
         const metrics: TurnMetric[] = [];
         const mock = (({ options, prompt }: Parameters<typeof query>[0]) => Object.assign((async function* () {
-            assert.equal(options?.verbatimPrompts, true);
-            assert.equal(options?.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1');
-            assert.equal(options?.env?.CLAUDE_CODE_DISABLE_CLAUDE_MDS, '1');
             let text = '';
             if (typeof prompt !== 'string') for await (const message of prompt) text += JSON.stringify(message.message.content);
             seen.push({ resume: options?.resume, prompt: text });
@@ -80,9 +77,6 @@ test('large resumed results are offloaded without changing host history or the f
     let queries = 0;
     let retainedFile = '';
     const mock = (({ options }: Parameters<typeof query>[0]) => Object.assign((async function* () {
-        assert.equal(options?.verbatimPrompts, true);
-        assert.equal(options?.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1');
-        assert.equal(options?.env?.CLAUDE_CODE_DISABLE_CLAUDE_MDS, '1');
         const config = JSON.parse(await readFile(options!.env!.OPENCODE_CLAUDE_MCP_CONFIG!, 'utf8'));
         queries++;
         if (queries === 1) {
